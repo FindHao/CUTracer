@@ -43,6 +43,7 @@
 
 extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
                                                        uint64_t pchannel_dev,
+                                                       uint64_t pc,
                                                        int32_t num_regs...)
 {
     if (!pred)
@@ -63,6 +64,7 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
     ri.warp_id = get_warpid();
     ri.opcode_id = opcode_id;
     ri.num_regs = num_regs;
+    ri.pc = pc;
 
     if (num_regs)
     {

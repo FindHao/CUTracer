@@ -171,6 +171,8 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
             /* add pointer to channel_dev*/
             nvbit_add_call_arg_const_val64(instr,
                                            (uint64_t)&channel_dev);
+            /* add instruction PC */
+            nvbit_add_call_arg_const_val64(instr, instr->getOffset());
             /* how many register values are passed next */
             nvbit_add_call_arg_const_val32(instr, reg_num_list.size());
             for (int num : reg_num_list)
@@ -190,6 +192,7 @@ __global__ void flush_channel()
      * completed */
     reg_info_t ri;
     ri.cta_id_x = -1;
+    ri.pc = 0;  // Set PC to 0 for completion marker
     channel_dev.push(&ri, sizeof(reg_info_t));
 
     /* flush channel */
@@ -257,9 +260,9 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
             {
                 cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
                 printf(
-                    "Kernel %s - grid size %d,%d,%d - block size %d,%d,%d - nregs "
+                    "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
                     "%d - shmem %d - cuda stream id %ld\n",
-                    nvbit_get_func_name(ctx, func),
+                    nvbit_get_func_name(ctx, func), nvbit_get_func_addr(ctx, func),
                     p->config->gridDimX, p->config->gridDimY,
                     p->config->gridDimZ, p->config->blockDimX,
                     p->config->blockDimY, p->config->blockDimZ, nregs,
@@ -270,9 +273,10 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
             {
                 cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
                 printf(
-                    "Kernel %s - grid size %d,%d,%d - block size %d,%d,%d - nregs "
+                    "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
                     "%d - shmem %d - cuda stream id %ld\n",
-                    nvbit_get_func_name(ctx, func), p->gridDimX, p->gridDimY,
+                    nvbit_get_func_name(ctx, func), nvbit_get_func_addr(ctx, func),
+                    p->gridDimX, p->gridDimY,
                     p->gridDimZ, p->blockDimX, p->blockDimY, p->blockDimZ, nregs,
                     shmem_static_nbytes + p->sharedMemBytes, (uint64_t)p->hStream);
             }
@@ -322,9 +326,9 @@ void *recv_thread_fun(void *)
                     break;
                 }
 
-                printf("CTA %d,%d,%d - warp %d - %s:\n", ri->cta_id_x,
+                printf("CTA %d,%d,%d - warp %d - %s - PC 0x%lx:\n", ri->cta_id_x,
                        ri->cta_id_y, ri->cta_id_z, ri->warp_id,
-                       id_to_sass_map[ri->opcode_id].c_str());
+                       id_to_sass_map[ri->opcode_id].c_str(), ri->pc);
 
                 for (int reg_idx = 0; reg_idx < ri->num_regs; reg_idx++)
                 {
