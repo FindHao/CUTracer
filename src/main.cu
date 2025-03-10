@@ -112,6 +112,11 @@ std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
 // Add timeout configuration (in seconds)
 int deadlock_timeout = 10; // Default 10 seconds, can be configured via environment variable
 
+// Add logging configuration variables
+int enable_logging = 1; // Default: enabled
+int log_last_traces_only = 0; // Default: log everything
+int log_to_stdout = 0; // Default: log to file
+
 void nvbit_at_init()
 {
     setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
@@ -124,6 +129,13 @@ void nvbit_at_init()
     GET_VAR_INT(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
     GET_VAR_INT(deadlock_timeout, "DEADLOCK_TIMEOUT", 10, 
         "Timeout in seconds to detect potential deadlocks");
+    // Add new environment variable controls for logging
+    GET_VAR_INT(enable_logging, "ENABLE_LOGGING", 1, 
+        "Enable/disable logging (1=enabled, 0=disabled)");
+    GET_VAR_INT(log_last_traces_only, "LOG_LAST_TRACES_ONLY", 0, 
+        "Only log the last trace for each warp (1=enabled, 0=disabled)");
+    GET_VAR_INT(log_to_stdout, "LOG_TO_STDOUT", 0, 
+        "Log to stdout instead of files (1=enabled, 0=disabled)");
     std::string pad(100, '-');
     printf("%s\n", pad.c_str());
 }
@@ -406,35 +418,45 @@ void *recv_thread_fun(void *)
         }
     }
     
-    // Generate filename with current date and time
-    time_t now = time(0);
-    struct tm *timeinfo = localtime(&now);
-    char timestamp[40]; // Reduced size to ensure it fits
-    strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", timeinfo);
-    
-    // Use snprintf instead of sprintf to avoid buffer overflow
-    char filename[200]; // Increased buffer size
-    snprintf(filename, sizeof(filename), "deadlock_detection_%s.log", timestamp);
-    
-    // Open file for writing
-    FILE* logfile = fopen(filename, "w");
-    if (!logfile) {
-        printf("Error: Could not open log file %s for writing\n", filename);
-        logfile = stdout; // Fallback to stdout if file can't be opened
-    } else {
-        printf("Writing trace information to %s\n", filename);
-    }
-    
-    // Always create a file for the last traces, regardless of timeout
-    char last_traces_filename[200]; // Increased buffer size
-    snprintf(last_traces_filename, sizeof(last_traces_filename), "last_traces_%s.log", timestamp);
-    
-    FILE* last_traces_file = fopen(last_traces_filename, "w");
-    if (!last_traces_file) {
-        printf("Error: Could not open last traces file %s for writing\n", last_traces_filename);
-    } else {
-        printf("Writing last traces to %s\n", last_traces_filename);
+    // Only create log files if logging is enabled
+    if (enable_logging) {
+        // Generate filename with current date and time
+        time_t now = time(0);
+        struct tm *timeinfo = localtime(&now);
+        char timestamp[40]; // Reduced size to ensure it fits
+        strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", timeinfo);
         
+        FILE* logfile = stdout; // Default to stdout
+        FILE* last_traces_file = stdout; // Default to stdout
+        
+        if (!log_to_stdout) {
+            // Use snprintf instead of sprintf to avoid buffer overflow
+            char filename[200]; // Increased buffer size
+            snprintf(filename, sizeof(filename), "deadlock_detection_%s.log", timestamp);
+            
+            // Open file for writing
+            logfile = fopen(filename, "w");
+            if (!logfile) {
+                printf("Error: Could not open log file %s for writing\n", filename);
+                logfile = stdout; // Fallback to stdout if file can't be opened
+            } else {
+                printf("Writing trace information to %s\n", filename);
+            }
+            
+            // Always create a file for the last traces, regardless of timeout
+            char last_traces_filename[200]; // Increased buffer size
+            snprintf(last_traces_filename, sizeof(last_traces_filename), "last_traces_%s.log", timestamp);
+            
+            last_traces_file = fopen(last_traces_filename, "w");
+            if (!last_traces_file) {
+                printf("Error: Could not open last traces file %s for writing\n", last_traces_filename);
+                last_traces_file = stdout; // Fallback to stdout
+            } else {
+                printf("Writing last traces to %s\n", last_traces_filename);
+            }
+        }
+        
+        // Write last traces information
         fprintf(last_traces_file, "\n===== LAST TRACES FOR EACH WARP =====\n\n");
         
         // Only print deadlock message if timeout occurred
@@ -469,45 +491,58 @@ void *recv_thread_fun(void *)
             }
         }
         
-        fclose(last_traces_file);
-    }
-    
-    // Print all collected information to the main log file
-    fprintf(logfile, "\n===== WARP TRACE INFORMATION =====\n\n");
-    if (timeout_occurred) {
-        fprintf(logfile, "!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n\n", 
-               deadlock_timeout);
-    }
-    
-    for (const auto& entry : warp_traces) {
-        const WarpKey& warp = entry.first;
-        const std::vector<TraceRecord>& traces = entry.second;
+        // Close the last traces file if it's not stdout
+        if (last_traces_file != stdout) {
+            fclose(last_traces_file);
+        }
         
-        fprintf(logfile, "CTA %d,%d,%d - warp %d - Total traces: %zu\n", 
-               warp.cta_id_x, warp.cta_id_y, warp.cta_id_z, 
-               warp.warp_id, traces.size());
-        
-        for (size_t trace_idx = 0; trace_idx < traces.size(); trace_idx++) {
-            const TraceRecord& trace = traces[trace_idx];
+        // Only print full trace information if not in last_traces_only mode
+        if (!log_last_traces_only) {
+            // Print all collected information to the main log file
+            fprintf(logfile, "\n===== WARP TRACE INFORMATION =====\n\n");
+            if (timeout_occurred) {
+                fprintf(logfile, "!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n\n", 
+                       deadlock_timeout);
+            }
             
-            fprintf(logfile, "  Trace %zu: %s - PC 0x%lx\n", 
-                   trace_idx, id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
-                   
-            for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++) {
-                fprintf(logfile, "  * ");
-                for (int i = 0; i < 32; i++) {
-                    fprintf(logfile, "Reg%zu_T%d: 0x%08x ", reg_idx, i, trace.reg_values[reg_idx][i]);
+            for (const auto& entry : warp_traces) {
+                const WarpKey& warp = entry.first;
+                const std::vector<TraceRecord>& traces = entry.second;
+                
+                fprintf(logfile, "CTA %d,%d,%d - warp %d - Total traces: %zu\n", 
+                       warp.cta_id_x, warp.cta_id_y, warp.cta_id_z, 
+                       warp.warp_id, traces.size());
+                
+                for (size_t trace_idx = 0; trace_idx < traces.size(); trace_idx++) {
+                    const TraceRecord& trace = traces[trace_idx];
+                    
+                    fprintf(logfile, "  Trace %zu: %s - PC 0x%lx\n", 
+                           trace_idx, id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
+                           
+                    for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++) {
+                        fprintf(logfile, "  * ");
+                        for (int i = 0; i < 32; i++) {
+                            fprintf(logfile, "Reg%zu_T%d: 0x%08x ", reg_idx, i, trace.reg_values[reg_idx][i]);
+                        }
+                        fprintf(logfile, "\n");
+                    }
+                    fprintf(logfile, "\n");
                 }
                 fprintf(logfile, "\n");
             }
-            fprintf(logfile, "\n");
         }
-        fprintf(logfile, "\n");
-    }
-    
-    // Close the file if it's not stdout
-    if (logfile != stdout) {
-        fclose(logfile);
+        
+        // Close the file if it's not stdout
+        if (logfile != stdout) {
+            fclose(logfile);
+        }
+    } else {
+        // If logging is disabled but a timeout occurred, still print a warning to stdout
+        if (timeout_occurred) {
+            printf("\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n", 
+                   deadlock_timeout);
+            printf("Logging is disabled. Set ENABLE_LOGGING=1 to generate detailed logs.\n\n");
+        }
     }
     
     // Clear the map after printing
