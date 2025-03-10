@@ -31,7 +31,6 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <stdarg.h>
 
 #include "utils/utils.h"
 
@@ -41,14 +40,12 @@
 /* contains definition of the mem_access_t structure */
 #include "common.h"
 
-extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
-                                                       uint64_t pchannel_dev,
-                                                       uint64_t pc,
-                                                       int32_t num_regs...)
-{
-    // Yueming: may need to capture the pred value too, leave it for now
-    if (!pred)
-    {
+extern "C" __device__ __noinline__ void instrument_mem(int pred, int opcode_id,
+                                                       uint64_t addr,
+                                                       uint64_t grid_launch_id,
+                                                       uint64_t pchannel_dev) {
+    /* if thread is predicated off, return */
+    if (!pred) {
         return;
     }
 
@@ -56,39 +53,24 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
     const int laneid = get_laneid();
     const int first_laneid = __ffs(active_mask) - 1;
 
-    reg_info_t ri;
+    mem_access_t ma;
 
-    int4 cta = get_ctaid();
-    ri.cta_id_x = cta.x;
-    ri.cta_id_y = cta.y;
-    ri.cta_id_z = cta.z;
-    ri.warp_id = get_warpid();
-    ri.opcode_id = opcode_id;
-    ri.num_regs = num_regs;
-    ri.pc = pc;
-
-    if (num_regs)
-    {
-        va_list vl;
-        va_start(vl, num_regs);
-
-        for (int i = 0; i < num_regs; i++)
-        {
-            uint32_t val = va_arg(vl, uint32_t);
-
-            /* collect register values from other threads */
-            for (int tid = 0; tid < 32; tid++)
-            {
-                ri.reg_vals[tid][i] = __shfl_sync(active_mask, val, tid);
-            }
-        }
-        va_end(vl);
+    /* collect memory address information from other threads */
+    for (int i = 0; i < 32; i++) {
+        ma.addrs[i] = __shfl_sync(active_mask, addr, i);
     }
 
+    int4 cta = get_ctaid();
+    ma.grid_launch_id = grid_launch_id;
+    ma.cta_id_x = cta.x;
+    ma.cta_id_y = cta.y;
+    ma.cta_id_z = cta.z;
+    ma.warp_id = get_warpid();
+    ma.opcode_id = opcode_id;
+
     /* first active lane pushes information on the channel */
-    if (first_laneid == laneid)
-    {
-        ChannelDev *channel_dev = (ChannelDev *)pchannel_dev;
-        channel_dev->push(&ri, sizeof(reg_info_t));
+    if (first_laneid == laneid) {
+        ChannelDev* channel_dev = (ChannelDev*)pchannel_dev;
+        channel_dev->push(&ma, sizeof(mem_access_t));
     }
 }

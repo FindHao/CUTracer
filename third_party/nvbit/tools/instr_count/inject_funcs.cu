@@ -31,64 +31,37 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <stdarg.h>
 
 #include "utils/utils.h"
 
-/* for channel */
-#include "utils/channel.hpp"
+extern "C" __device__ __noinline__ void count_instrs(int predicate,
+                                                     int count_warp_level,
+                                                     uint64_t pcounter) {
+    /* all the active threads will compute the active mask */
+    const int active_mask = __ballot_sync(__activemask(), 1);
 
-/* contains definition of the mem_access_t structure */
-#include "common.h"
+    /* compute the predicate mask */
+    const int predicate_mask = __ballot_sync(__activemask(), predicate);
 
-extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
-                                                       uint64_t pchannel_dev,
-                                                       uint64_t pc,
-                                                       int32_t num_regs...)
-{
-    // Yueming: may need to capture the pred value too, leave it for now
-    if (!pred)
-    {
-        return;
-    }
-
-    int active_mask = __ballot_sync(__activemask(), 1);
+    /* each thread will get a lane id (get_lane_id is implemented in
+     * utils/utils.h) */
     const int laneid = get_laneid();
+
+    /* get the id of the first active thread */
     const int first_laneid = __ffs(active_mask) - 1;
 
-    reg_info_t ri;
+    /* count all the active thread */
+    const int num_threads = __popc(predicate_mask);
 
-    int4 cta = get_ctaid();
-    ri.cta_id_x = cta.x;
-    ri.cta_id_y = cta.y;
-    ri.cta_id_z = cta.z;
-    ri.warp_id = get_warpid();
-    ri.opcode_id = opcode_id;
-    ri.num_regs = num_regs;
-    ri.pc = pc;
-
-    if (num_regs)
-    {
-        va_list vl;
-        va_start(vl, num_regs);
-
-        for (int i = 0; i < num_regs; i++)
-        {
-            uint32_t val = va_arg(vl, uint32_t);
-
-            /* collect register values from other threads */
-            for (int tid = 0; tid < 32; tid++)
-            {
-                ri.reg_vals[tid][i] = __shfl_sync(active_mask, val, tid);
+    /* only the first active thread will perform the atomic */
+    if (first_laneid == laneid) {
+        if (count_warp_level) {
+            /* num threads can be zero when accounting for predicates off */
+            if (num_threads > 0) {
+                atomicAdd((unsigned long long*)pcounter, 1);
             }
+        } else {
+            atomicAdd((unsigned long long*)pcounter, num_threads);
         }
-        va_end(vl);
-    }
-
-    /* first active lane pushes information on the channel */
-    if (first_laneid == laneid)
-    {
-        ChannelDev *channel_dev = (ChannelDev *)pchannel_dev;
-        channel_dev->push(&ri, sizeof(reg_info_t));
     }
 }

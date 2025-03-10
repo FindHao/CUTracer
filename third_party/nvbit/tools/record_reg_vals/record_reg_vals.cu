@@ -37,7 +37,6 @@
 #include <map>
 #include <vector>
 #include <unordered_set>
-#include <time.h>
 
 /* every tool needs to include this once */
 #include "nvbit_tool.h"
@@ -59,8 +58,7 @@ static ChannelHost channel_host;
 /* receiving thread and its control variables */
 pthread_t recv_thread;
 
-enum class RecvThreadState
-{
+enum class RecvThreadState {
     WORKING,
     STOP,
     FINISHED,
@@ -83,37 +81,7 @@ int verbose = 0;
 std::map<std::string, int> sass_to_id_map;
 std::map<int, std::string> id_to_sass_map;
 
-/* Structure to represent a single trace record */
-struct TraceRecord {
-    int opcode_id;
-    uint64_t pc;
-    std::vector<std::vector<uint32_t>> reg_values; // [reg_idx][thread_idx]
-};
-
-/* Structure to identify a warp */
-struct WarpKey {
-    int cta_id_x;
-    int cta_id_y;
-    int cta_id_z;
-    int warp_id;
-    
-    // Operator for map comparison
-    bool operator<(const WarpKey& other) const {
-        if (cta_id_x != other.cta_id_x) return cta_id_x < other.cta_id_x;
-        if (cta_id_y != other.cta_id_y) return cta_id_y < other.cta_id_y;
-        if (cta_id_z != other.cta_id_z) return cta_id_z < other.cta_id_z;
-        return warp_id < other.warp_id;
-    }
-};
-
-/* Map to store traces for each warp */
-std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
-
-// Add timeout configuration (in seconds)
-int deadlock_timeout = 10; // Default 10 seconds, can be configured via environment variable
-
-void nvbit_at_init()
-{
+void nvbit_at_init() {
     setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
     GET_VAR_INT(
         instr_begin_interval, "INSTR_BEGIN", 0,
@@ -122,16 +90,13 @@ void nvbit_at_init()
         instr_end_interval, "INSTR_END", UINT32_MAX,
         "End of the instruction interval where to apply instrumentation");
     GET_VAR_INT(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
-    GET_VAR_INT(deadlock_timeout, "DEADLOCK_TIMEOUT", 10, 
-        "Timeout in seconds to detect potential deadlocks");
     std::string pad(100, '-');
     printf("%s\n", pad.c_str());
 }
 /* Set used to avoid re-instrumenting the same functions multiple times */
 std::unordered_set<CUfunction> already_instrumented;
 
-void instrument_function_if_needed(CUcontext ctx, CUfunction func)
-{
+void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
     /* Get related functions of the kernel (device function that can be
      * called by the kernel) */
     std::vector<CUfunction> related_functions =
@@ -141,38 +106,31 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
     related_functions.push_back(func);
 
     /* iterate on function */
-    for (auto f : related_functions)
-    {
+    for (auto f : related_functions) {
         /* "recording" function was instrumented, if set insertion failed
          * we have already encountered this function */
-        if (!already_instrumented.insert(f).second)
-        {
+        if (!already_instrumented.insert(f).second) {
             continue;
         }
         const std::vector<Instr *> &instrs = nvbit_get_instrs(ctx, f);
-        if (verbose)
-        {
+        if (verbose) {
             printf("Inspecting function %s at address 0x%lx\n",
                    nvbit_get_func_name(ctx, f), nvbit_get_func_addr(ctx, f));
         }
 
         uint32_t cnt = 0;
         /* iterate on all the static instructions in the function */
-        for (auto instr : instrs)
-        {
-            if (cnt < instr_begin_interval || cnt >= instr_end_interval)
-            {
+        for (auto instr : instrs) {
+            if (cnt < instr_begin_interval || cnt >= instr_end_interval) {
                 cnt++;
                 continue;
             }
-            if (verbose)
-            {
+            if (verbose) {
                 instr->printDecoded();
             }
 
             if (sass_to_id_map.find(instr->getSass()) ==
-                sass_to_id_map.end())
-            {
+                sass_to_id_map.end()) {
                 int opcode_id = sass_to_id_map.size();
                 sass_to_id_map[instr->getSass()] = opcode_id;
                 id_to_sass_map[opcode_id] = std::string(instr->getSass());
@@ -181,14 +139,11 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
             int opcode_id = sass_to_id_map[instr->getSass()];
             std::vector<int> reg_num_list;
             /* iterate on the operands */
-            for (int i = 0; i < instr->getNumOperands(); i++)
-            {
+            for (int i = 0; i < instr->getNumOperands(); i++) {
                 /* get the operand "i" */
                 const InstrType::operand_t *op = instr->getOperand(i);
-                if (op->type == InstrType::OperandType::REG)
-                {
-                    for (int reg_idx = 0; reg_idx < instr->getSize() / 4; reg_idx++)
-                    {
+                if (op->type == InstrType::OperandType::REG) {
+                    for (int reg_idx = 0; reg_idx < instr->getSize() / 4; reg_idx++) {
                         reg_num_list.push_back(op->u.reg.num + reg_idx);
                     }
                 }
@@ -203,12 +158,9 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
             /* add pointer to channel_dev*/
             nvbit_add_call_arg_const_val64(instr,
                                            (uint64_t)&channel_dev);
-            /* add instruction PC */
-            nvbit_add_call_arg_const_val64(instr, instr->getOffset());
             /* how many register values are passed next */
             nvbit_add_call_arg_const_val32(instr, reg_num_list.size());
-            for (int num : reg_num_list)
-            {
+            for (int num : reg_num_list) {
                 /* last parameter tells it is a variadic parameter passed to
                  * the instrument function record_reg_val() */
                 nvbit_add_call_arg_reg_val(instr, num, true);
@@ -218,13 +170,11 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
     }
 }
 
-__global__ void flush_channel()
-{
+__global__ void flush_channel() {
     /* push memory access with negative cta id to communicate the kernel is
      * completed */
     reg_info_t ri;
     ri.cta_id_x = -1;
-    ri.pc = 0;  // Set PC to 0 for completion marker
     channel_dev.push(&ri, sizeof(reg_info_t));
 
     /* flush channel */
@@ -232,14 +182,12 @@ __global__ void flush_channel()
 }
 
 void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
-                         const char *name, void *params, CUresult *pStatus)
-{
+                         const char *name, void *params, CUresult *pStatus) {
     pthread_mutex_lock(&cuda_event_mutex);
 
     /* we prevent re-entry on this callback when issuing CUDA functions inside
      * this function */
-    if (skip_callback_flag)
-    {
+    if (skip_callback_flag) {
         pthread_mutex_unlock(&cuda_event_mutex);
         return;
     }
@@ -250,25 +198,20 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
         cbid == API_CUDA_cuLaunchGrid || cbid == API_CUDA_cuLaunchGridAsync ||
         cbid == API_CUDA_cuLaunchKernel ||
         cbid == API_CUDA_cuLaunchKernelEx ||
-        cbid == API_CUDA_cuLaunchKernelEx_ptsz)
-    {
+        cbid == API_CUDA_cuLaunchKernelEx_ptsz) {
         /* cast params to launch parameter based on cbid since if we are here
          * we know these are the right parameters types */
         CUfunction func;
         if (cbid == API_CUDA_cuLaunchKernelEx_ptsz ||
-            cbid == API_CUDA_cuLaunchKernelEx)
-        {
-            cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
+            cbid == API_CUDA_cuLaunchKernelEx) {
+            cuLaunchKernelEx_params* p = (cuLaunchKernelEx_params*)params;
             func = p->f;
-        }
-        else
-        {
-            cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
+        } else {
+            cuLaunchKernel_params* p = (cuLaunchKernel_params*)params;
             func = p->f;
         }
 
-        if (!is_exit)
-        {
+        if (!is_exit) {
             /* Make sure GPU is idle */
             cudaDeviceSynchronize();
             assert(cudaGetLastError() == cudaSuccess);
@@ -288,38 +231,31 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
             nvbit_enable_instrumented(ctx, func, true);
 
             if (cbid == API_CUDA_cuLaunchKernelEx_ptsz ||
-                cbid == API_CUDA_cuLaunchKernelEx)
-            {
-                cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
+                cbid == API_CUDA_cuLaunchKernelEx) {
+                cuLaunchKernelEx_params* p = (cuLaunchKernelEx_params*)params;
                 printf(
-                    "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
+                    "Kernel %s - grid size %d,%d,%d - block size %d,%d,%d - nregs "
                     "%d - shmem %d - cuda stream id %ld\n",
-                    nvbit_get_func_name(ctx, func), nvbit_get_func_addr(ctx, func),
+                    nvbit_get_func_name(ctx, func),
                     p->config->gridDimX, p->config->gridDimY,
                     p->config->gridDimZ, p->config->blockDimX,
                     p->config->blockDimY, p->config->blockDimZ, nregs,
                     shmem_static_nbytes + p->config->sharedMemBytes,
                     (uint64_t)p->config->hStream);
-            }
-            else
-            {
-                cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
+            } else {
+                cuLaunchKernel_params* p = (cuLaunchKernel_params*)params;
                 printf(
-                    "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
+                    "Kernel %s - grid size %d,%d,%d - block size %d,%d,%d - nregs "
                     "%d - shmem %d - cuda stream id %ld\n",
-                    nvbit_get_func_name(ctx, func), nvbit_get_func_addr(ctx, func),
-                    p->gridDimX, p->gridDimY,
+                    nvbit_get_func_name(ctx, func), p->gridDimX, p->gridDimY,
                     p->gridDimZ, p->blockDimX, p->blockDimY, p->blockDimZ, nregs,
                     shmem_static_nbytes + p->sharedMemBytes, (uint64_t)p->hStream);
             }
-        }
-        else
-        {
+        } else {
             /* make sure current kernel is completed */
             cudaDeviceSynchronize();
             cudaError_t kernelError = cudaGetLastError();
-            if (kernelError != cudaSuccess)
-            {
+            if (kernelError != cudaSuccess) {
                 printf("Kernel launch error: %s\n", cudaGetErrorString(kernelError));
                 assert(0);
             }
@@ -335,191 +271,48 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
     pthread_mutex_unlock(&cuda_event_mutex);
 }
 
-void *recv_thread_fun(void *)
-{
+void *recv_thread_fun(void *) {
     char *recv_buffer = (char *)malloc(CHANNEL_SIZE);
-    
-    // Variables for timeout detection
-    time_t last_recv_time = time(0);
-    bool timeout_occurred = false;
 
-    while (recv_thread_done == RecvThreadState::WORKING)
-    {
-        // Check for timeout
-        time_t current_time = time(0);
-        if (difftime(current_time, last_recv_time) > deadlock_timeout) {
-            printf("\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n", 
-                   deadlock_timeout);
-            timeout_occurred = true;
-            break; // Exit the loop to proceed with logging
-        }
-        
-        // Use the original recv function without timeout parameter
+    while (recv_thread_done == RecvThreadState::WORKING) {
         uint32_t num_recv_bytes = channel_host.recv(recv_buffer, CHANNEL_SIZE);
 
         if (num_recv_bytes > 0) {
-            // Reset the timeout timer when data is received
-            last_recv_time = time(0);
-            
             uint32_t num_processed_bytes = 0;
-            while (num_processed_bytes < num_recv_bytes)
-            {
+            while (num_processed_bytes < num_recv_bytes) {
                 reg_info_t *ri =
                     (reg_info_t *)&recv_buffer[num_processed_bytes];
 
                 /* when we get this cta_id_x it means the kernel has completed
                  */
-                if (ri->cta_id_x == -1)
-                {
+                if (ri->cta_id_x == -1) {
                     break;
                 }
 
-                // Create key for this warp
-                WarpKey key;
-                key.cta_id_x = ri->cta_id_x;
-                key.cta_id_y = ri->cta_id_y;
-                key.cta_id_z = ri->cta_id_z;
-                key.warp_id = ri->warp_id;
-                
-                // Create trace record
-                TraceRecord trace;
-                trace.opcode_id = ri->opcode_id;
-                trace.pc = ri->pc;
-                
-                // Store register values
-                trace.reg_values.resize(ri->num_regs);
+                printf("CTA %d,%d,%d - warp %d - %s:\n", ri->cta_id_x,
+                       ri->cta_id_y, ri->cta_id_z, ri->warp_id,
+                       id_to_sass_map[ri->opcode_id].c_str());
+
                 for (int reg_idx = 0; reg_idx < ri->num_regs; reg_idx++) {
-                    trace.reg_values[reg_idx].resize(32);
+                    printf("* ");
                     for (int i = 0; i < 32; i++) {
-                        trace.reg_values[reg_idx][i] = ri->reg_vals[i][reg_idx];
+                        printf("Reg%d_T%d: 0x%08x ", reg_idx, i,
+                               ri->reg_vals[i][reg_idx]);
                     }
+                    printf("\n");
                 }
-                
-                // Add trace to the warp's trace vector
-                warp_traces[key].push_back(trace);
-                
+
+                printf("\n");
                 num_processed_bytes += sizeof(reg_info_t);
             }
-        } else {
-            // If no data received, sleep for a short time to avoid busy waiting
-            usleep(100000); // Sleep for 100ms
         }
     }
-    
-    // Generate filename with current date and time
-    time_t now = time(0);
-    struct tm *timeinfo = localtime(&now);
-    char timestamp[40]; // Reduced size to ensure it fits
-    strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", timeinfo);
-    
-    // Use snprintf instead of sprintf to avoid buffer overflow
-    char filename[200]; // Increased buffer size
-    snprintf(filename, sizeof(filename), "deadlock_detection_%s.log", timestamp);
-    
-    // Open file for writing
-    FILE* logfile = fopen(filename, "w");
-    if (!logfile) {
-        printf("Error: Could not open log file %s for writing\n", filename);
-        logfile = stdout; // Fallback to stdout if file can't be opened
-    } else {
-        printf("Writing trace information to %s\n", filename);
-    }
-    
-    // Always create a file for the last traces, regardless of timeout
-    char last_traces_filename[200]; // Increased buffer size
-    snprintf(last_traces_filename, sizeof(last_traces_filename), "last_traces_%s.log", timestamp);
-    
-    FILE* last_traces_file = fopen(last_traces_filename, "w");
-    if (!last_traces_file) {
-        printf("Error: Could not open last traces file %s for writing\n", last_traces_filename);
-    } else {
-        printf("Writing last traces to %s\n", last_traces_filename);
-        
-        fprintf(last_traces_file, "\n===== LAST TRACES FOR EACH WARP =====\n\n");
-        
-        // Only print deadlock message if timeout occurred
-        if (timeout_occurred) {
-            fprintf(last_traces_file, "!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n\n", 
-                   deadlock_timeout);
-        }
-        
-        // Print the last trace for each warp
-        for (const auto& entry : warp_traces) {
-            const WarpKey& warp = entry.first;
-            const std::vector<TraceRecord>& traces = entry.second;
-            
-            if (!traces.empty()) {
-                const TraceRecord& last_trace = traces.back();
-                
-                fprintf(last_traces_file, "CTA %d,%d,%d - warp %d - Last trace:\n", 
-                       warp.cta_id_x, warp.cta_id_y, warp.cta_id_z, warp.warp_id);
-                
-                fprintf(last_traces_file, "  %s - PC 0x%lx\n", 
-                       id_to_sass_map[last_trace.opcode_id].c_str(), last_trace.pc);
-                
-                for (size_t reg_idx = 0; reg_idx < last_trace.reg_values.size(); reg_idx++) {
-                    fprintf(last_traces_file, "  * ");
-                    for (int i = 0; i < 32; i++) {
-                        fprintf(last_traces_file, "Reg%zu_T%d: 0x%08x ", 
-                               reg_idx, i, last_trace.reg_values[reg_idx][i]);
-                    }
-                    fprintf(last_traces_file, "\n");
-                }
-                fprintf(last_traces_file, "\n");
-            }
-        }
-        
-        fclose(last_traces_file);
-    }
-    
-    // Print all collected information to the main log file
-    fprintf(logfile, "\n===== WARP TRACE INFORMATION =====\n\n");
-    if (timeout_occurred) {
-        fprintf(logfile, "!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n\n", 
-               deadlock_timeout);
-    }
-    
-    for (const auto& entry : warp_traces) {
-        const WarpKey& warp = entry.first;
-        const std::vector<TraceRecord>& traces = entry.second;
-        
-        fprintf(logfile, "CTA %d,%d,%d - warp %d - Total traces: %zu\n", 
-               warp.cta_id_x, warp.cta_id_y, warp.cta_id_z, 
-               warp.warp_id, traces.size());
-        
-        for (size_t trace_idx = 0; trace_idx < traces.size(); trace_idx++) {
-            const TraceRecord& trace = traces[trace_idx];
-            
-            fprintf(logfile, "  Trace %zu: %s - PC 0x%lx\n", 
-                   trace_idx, id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
-                   
-            for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++) {
-                fprintf(logfile, "  * ");
-                for (int i = 0; i < 32; i++) {
-                    fprintf(logfile, "Reg%zu_T%d: 0x%08x ", reg_idx, i, trace.reg_values[reg_idx][i]);
-                }
-                fprintf(logfile, "\n");
-            }
-            fprintf(logfile, "\n");
-        }
-        fprintf(logfile, "\n");
-    }
-    
-    // Close the file if it's not stdout
-    if (logfile != stdout) {
-        fclose(logfile);
-    }
-    
-    // Clear the map after printing
-    warp_traces.clear();
-    
     free(recv_buffer);
     recv_thread_done = RecvThreadState::FINISHED;
     return NULL;
 }
 
-void nvbit_tool_init(CUcontext ctx)
-{
+void nvbit_tool_init(CUcontext ctx) {
     /* set mutex as recursive */
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
@@ -531,8 +324,7 @@ void nvbit_tool_init(CUcontext ctx)
     nvbit_set_tool_pthread(channel_host.get_thread());
 }
 
-void nvbit_at_ctx_term(CUcontext ctx)
-{
+void nvbit_at_ctx_term(CUcontext ctx) {
     skip_callback_flag = true;
     /* Notify receiver thread and wait for receiver thread to
      * notify back */

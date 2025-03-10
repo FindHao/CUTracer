@@ -31,7 +31,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <stdarg.h>
+#include <cstdarg>
 
 #include "utils/utils.h"
 
@@ -43,12 +43,8 @@
 
 extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
                                                        uint64_t pchannel_dev,
-                                                       uint64_t pc,
-                                                       int32_t num_regs...)
-{
-    // Yueming: may need to capture the pred value too, leave it for now
-    if (!pred)
-    {
+                                                       int32_t num_regs...) {
+    if (!pred) {
         return;
     }
 
@@ -65,20 +61,16 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
     ri.warp_id = get_warpid();
     ri.opcode_id = opcode_id;
     ri.num_regs = num_regs;
-    ri.pc = pc;
 
-    if (num_regs)
-    {
+    if (num_regs) {
         va_list vl;
         va_start(vl, num_regs);
 
-        for (int i = 0; i < num_regs; i++)
-        {
+        for (int i = 0; i < num_regs; i++) {
             uint32_t val = va_arg(vl, uint32_t);
 
             /* collect register values from other threads */
-            for (int tid = 0; tid < 32; tid++)
-            {
+            for (int tid = 0; tid < 32; tid++) {
                 ri.reg_vals[tid][i] = __shfl_sync(active_mask, val, tid);
             }
         }
@@ -86,8 +78,7 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
     }
 
     /* first active lane pushes information on the channel */
-    if (first_laneid == laneid)
-    {
+    if (first_laneid == laneid) {
         ChannelDev *channel_dev = (ChannelDev *)pchannel_dev;
         channel_dev->push(&ri, sizeof(reg_info_t));
     }

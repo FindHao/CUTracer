@@ -38,7 +38,7 @@ OBJ_DIR := obj/
 LIB_DIR := lib/
 
 # NVBIT settings
-NVBIT_PATH=./third_party/nvbit
+NVBIT_PATH=./third_party/nvbit/core
 INCLUDES=-I$(NVBIT_PATH) -I./include 
 
 # Libraries
