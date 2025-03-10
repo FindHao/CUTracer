@@ -116,6 +116,7 @@ int deadlock_timeout = 10; // Default 10 seconds, can be configured via environm
 int enable_logging = 1; // Default: enabled
 int log_last_traces_only = 0; // Default: log everything
 int log_to_stdout = 0; // Default: log to file
+int store_last_traces_only = 0; // Default: store all traces in memory
 
 void nvbit_at_init()
 {
@@ -136,6 +137,8 @@ void nvbit_at_init()
         "Only log the last trace for each warp (1=enabled, 0=disabled)");
     GET_VAR_INT(log_to_stdout, "LOG_TO_STDOUT", 0, 
         "Log to stdout instead of files (1=enabled, 0=disabled)");
+    GET_VAR_INT(store_last_traces_only, "STORE_LAST_TRACES_ONLY", 0, 
+        "Only store the last trace for each warp in memory (1=enabled, 0=disabled)");
     std::string pad(100, '-');
     printf("%s\n", pad.c_str());
 }
@@ -408,7 +411,17 @@ void *recv_thread_fun(void *)
                 }
                 
                 // Add trace to the warp's trace vector
-                warp_traces[key].push_back(trace);
+                if (store_last_traces_only) {
+                    // If we're only keeping the last trace in memory, clear any existing traces
+                    // and just add this one
+                    if (warp_traces.find(key) != warp_traces.end()) {
+                        warp_traces[key].clear();  // Clear existing traces
+                    }
+                    warp_traces[key].push_back(trace);  // Add the new trace
+                } else {
+                    // Normal mode: keep all traces in memory
+                    warp_traces[key].push_back(trace);
+                }
                 
                 num_processed_bytes += sizeof(reg_info_t);
             }
@@ -496,7 +509,7 @@ void *recv_thread_fun(void *)
             fclose(last_traces_file);
         }
         
-        // Only print full trace information if not in last_traces_only mode
+        // Only print full trace information if not in log_last_traces_only mode
         if (!log_last_traces_only) {
             // Print all collected information to the main log file
             fprintf(logfile, "\n===== WARP TRACE INFORMATION =====\n\n");
