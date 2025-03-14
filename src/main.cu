@@ -119,11 +119,12 @@ std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
 int deadlock_timeout = 10; // Default 10 seconds, can be configured via environment variable
 
 // Add logging configuration variables
-int enable_logging = 1;         // Default: enabled
-int log_last_traces_only = 0;   // Default: log everything
-int log_to_stdout = 0;          // Default: log to files
-int store_last_traces_only = 0; // Default: store all traces in memory
-int dump_intermedia_trace = 0;  // Default: don't dump intermediate traces
+int enable_logging = 1;                // Default: enabled
+int log_last_traces_only = 0;          // Default: log everything
+int log_to_stdout = 0;                 // Default: log to files
+int store_last_traces_only = 0;        // Default: store all traces in memory
+int dump_intermedia_trace = 0;         // Default: don't dump intermediate traces
+int dump_intermedia_trace_timeout = 0; // Default: no timeout (0 means unlimited)
 
 /* Store the name of the currently executing kernel */
 char *current_kernel_name = NULL;
@@ -155,6 +156,8 @@ void nvbit_at_init()
                 "Only store the last trace for each warp in memory (1=enabled, 0=disabled)");
     GET_VAR_INT(dump_intermedia_trace, "DUMP_INTERMEDIA_TRACE", 0,
                 "Dump intermediate trace data to stdout (1=enabled, 0=disabled)");
+    GET_VAR_INT(dump_intermedia_trace_timeout, "DUMP_INTERMEDIA_TRACE_TIMEOUT", 0,
+                "Timeout in seconds for intermediate trace dumping (0=unlimited)");
     std::string pad(100, '-');
     printf("%s\n", pad.c_str());
 }
@@ -384,6 +387,10 @@ void *recv_thread_fun(void *)
     time_t last_recv_time = time(0);
     bool timeout_occurred = false;
 
+    // Variables for intermediate trace timeout
+    time_t dump_start_time = time(0);
+    bool dump_timeout_reached = false;
+
     while (recv_thread_done == RecvThreadState::WORKING)
     {
         // Check for timeout
@@ -418,6 +425,9 @@ void *recv_thread_fun(void *)
                     dump_trace_logs(warp_traces, false, current_kernel_name);
                     // Clear traces to prepare for the next kernel
                     warp_traces.clear();
+                    // Reset the dump timeout when a new kernel starts
+                    dump_start_time = time(0);
+                    dump_timeout_reached = false;
                     break;
                 }
 
@@ -461,25 +471,44 @@ void *recv_thread_fun(void *)
                     warp_traces[key].push_back(trace);
                 }
 
-                // Dump intermediate trace if enabled
-                if (dump_intermedia_trace)
+                // Check if we should dump intermediate trace
+                if (dump_intermedia_trace && !dump_timeout_reached)
                 {
-                    printf("INTERMEDIATE TRACE - CTA %d,%d,%d - warp %d:\n",
-                           key.cta_id_x, key.cta_id_y, key.cta_id_z, key.warp_id);
-                    printf("  %s - PC 0x%lx\n",
-                           id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
-
-                    for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++)
+                    // Check if dump timeout has been reached
+                    if (dump_intermedia_trace_timeout > 0)
                     {
-                        printf("  * ");
-                        for (int i = 0; i < 32; i++)
+                        current_time = time(0);
+                        if (difftime(current_time, dump_start_time) > dump_intermedia_trace_timeout)
                         {
-                            printf("Reg%zu_T%d: 0x%08x ",
-                                   reg_idx, i, trace.reg_values[reg_idx][i]);
+                            if (!dump_timeout_reached)
+                            {
+                                printf("\n!!! INTERMEDIATE TRACE DUMPING STOPPED: Timeout of %d seconds reached !!!\n\n",
+                                       dump_intermedia_trace_timeout);
+                                dump_timeout_reached = true;
+                            }
+                        }
+                    }
+
+                    // Only dump if timeout not reached
+                    if (!dump_timeout_reached)
+                    {
+                        printf("INTERMEDIATE TRACE - CTA %d,%d,%d - warp %d:\n",
+                               key.cta_id_x, key.cta_id_y, key.cta_id_z, key.warp_id);
+                        printf("  %s - PC 0x%lx\n",
+                               id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
+
+                        for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++)
+                        {
+                            printf("  * ");
+                            for (int i = 0; i < 32; i++)
+                            {
+                                printf("Reg%zu_T%d: 0x%08x ",
+                                       reg_idx, i, trace.reg_values[reg_idx][i]);
+                            }
+                            printf("\n");
                         }
                         printf("\n");
                     }
-                    printf("\n");
                 }
 
                 num_processed_bytes += sizeof(reg_info_t);
