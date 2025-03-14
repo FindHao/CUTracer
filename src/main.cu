@@ -84,24 +84,30 @@ std::map<std::string, int> sass_to_id_map;
 std::map<int, std::string> id_to_sass_map;
 
 /* Structure to represent a single trace record */
-struct TraceRecord {
+struct TraceRecord
+{
     int opcode_id;
     uint64_t pc;
     std::vector<std::vector<uint32_t>> reg_values; // [reg_idx][thread_idx]
 };
 
 /* Structure to identify a warp */
-struct WarpKey {
+struct WarpKey
+{
     int cta_id_x;
     int cta_id_y;
     int cta_id_z;
     int warp_id;
-    
+
     // Operator for map comparison
-    bool operator<(const WarpKey& other) const {
-        if (cta_id_x != other.cta_id_x) return cta_id_x < other.cta_id_x;
-        if (cta_id_y != other.cta_id_y) return cta_id_y < other.cta_id_y;
-        if (cta_id_z != other.cta_id_z) return cta_id_z < other.cta_id_z;
+    bool operator<(const WarpKey &other) const
+    {
+        if (cta_id_x != other.cta_id_x)
+            return cta_id_x < other.cta_id_x;
+        if (cta_id_y != other.cta_id_y)
+            return cta_id_y < other.cta_id_y;
+        if (cta_id_z != other.cta_id_z)
+            return cta_id_z < other.cta_id_z;
         return warp_id < other.warp_id;
     }
 };
@@ -113,17 +119,18 @@ std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
 int deadlock_timeout = 10; // Default 10 seconds, can be configured via environment variable
 
 // Add logging configuration variables
-int enable_logging = 1; // Default: enabled
-int log_last_traces_only = 0; // Default: log everything
-int log_to_stdout = 0; // Default: log to file
+int enable_logging = 1;         // Default: enabled
+int log_last_traces_only = 0;   // Default: log everything
+int log_to_stdout = 0;          // Default: log to files
 int store_last_traces_only = 0; // Default: store all traces in memory
+int dump_intermedia_trace = 0;  // Default: don't dump intermediate traces
 
 /* Store the name of the currently executing kernel */
-char* current_kernel_name = NULL;
+char *current_kernel_name = NULL;
 
 // Function to handle logging of trace data
-void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>>& traces, 
-                    bool timeout_occurred, const char* kernel_name = nullptr);
+void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces,
+                     bool timeout_occurred, const char *kernel_name = nullptr);
 
 void nvbit_at_init()
 {
@@ -135,17 +142,19 @@ void nvbit_at_init()
         instr_end_interval, "INSTR_END", UINT32_MAX,
         "End of the instruction interval where to apply instrumentation");
     GET_VAR_INT(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
-    GET_VAR_INT(deadlock_timeout, "DEADLOCK_TIMEOUT", 10, 
-        "Timeout in seconds to detect potential deadlocks");
+    GET_VAR_INT(deadlock_timeout, "DEADLOCK_TIMEOUT", 10,
+                "Timeout in seconds to detect potential deadlocks");
     // Add new environment variable controls for logging
-    GET_VAR_INT(enable_logging, "ENABLE_LOGGING", 1, 
-        "Enable/disable logging (1=enabled, 0=disabled)");
-    GET_VAR_INT(log_last_traces_only, "LOG_LAST_TRACES_ONLY", 0, 
-        "Only log the last trace for each warp (1=enabled, 0=disabled)");
-    GET_VAR_INT(log_to_stdout, "LOG_TO_STDOUT", 0, 
-        "Log to stdout instead of files (1=enabled, 0=disabled)");
-    GET_VAR_INT(store_last_traces_only, "STORE_LAST_TRACES_ONLY", 0, 
-        "Only store the last trace for each warp in memory (1=enabled, 0=disabled)");
+    GET_VAR_INT(enable_logging, "ENABLE_LOGGING", 1,
+                "Enable/disable logging (1=enabled, 0=disabled)");
+    GET_VAR_INT(log_last_traces_only, "LOG_LAST_TRACES_ONLY", 0,
+                "Only log the last trace for each warp (1=enabled, 0=disabled)");
+    GET_VAR_INT(log_to_stdout, "LOG_TO_STDOUT", 0,
+                "Log to stdout instead of files (1=enabled, 0=disabled)");
+    GET_VAR_INT(store_last_traces_only, "STORE_LAST_TRACES_ONLY", 0,
+                "Only store the last trace for each warp in memory (1=enabled, 0=disabled)");
+    GET_VAR_INT(dump_intermedia_trace, "DUMP_INTERMEDIA_TRACE", 0,
+                "Dump intermediate trace data to stdout (1=enabled, 0=disabled)");
     std::string pad(100, '-');
     printf("%s\n", pad.c_str());
 }
@@ -246,7 +255,7 @@ __global__ void flush_channel()
      * completed */
     reg_info_t ri;
     ri.cta_id_x = -1;
-    ri.pc = 0;  // Set PC to 0 for completion marker
+    ri.pc = 0; // Set PC to 0 for completion marker
     channel_dev.push(&ri, sizeof(reg_info_t));
 
     /* flush channel */
@@ -310,8 +319,8 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
             nvbit_enable_instrumented(ctx, func, true);
 
             // Get kernel name for use in logs
-            const char* kernel_name = nvbit_get_func_name(ctx, func);
-            
+            const char *kernel_name = nvbit_get_func_name(ctx, func);
+
             if (cbid == API_CUDA_cuLaunchKernelEx_ptsz ||
                 cbid == API_CUDA_cuLaunchKernelEx)
             {
@@ -337,9 +346,10 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
                     p->gridDimZ, p->blockDimX, p->blockDimY, p->blockDimZ, nregs,
                     shmem_static_nbytes + p->sharedMemBytes, (uint64_t)p->hStream);
             }
-            
+
             // Store current kernel name for use when kernel completes
-            if (current_kernel_name) {
+            if (current_kernel_name)
+            {
                 free(current_kernel_name);
             }
             current_kernel_name = strdup(kernel_name);
@@ -369,7 +379,7 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid,
 void *recv_thread_fun(void *)
 {
     char *recv_buffer = (char *)malloc(CHANNEL_SIZE);
-    
+
     // Variables for timeout detection
     time_t last_recv_time = time(0);
     bool timeout_occurred = false;
@@ -378,20 +388,22 @@ void *recv_thread_fun(void *)
     {
         // Check for timeout
         time_t current_time = time(0);
-        if (difftime(current_time, last_recv_time) > deadlock_timeout) {
-            printf("\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n", 
+        if (difftime(current_time, last_recv_time) > deadlock_timeout)
+        {
+            printf("\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n",
                    deadlock_timeout);
             timeout_occurred = true;
             break; // Exit the loop to proceed with logging
         }
-        
+
         // Use the original recv function without timeout parameter
         uint32_t num_recv_bytes = channel_host.recv(recv_buffer, CHANNEL_SIZE);
 
-        if (num_recv_bytes > 0) {
+        if (num_recv_bytes > 0)
+        {
             // Reset the timeout timer when data is received
             last_recv_time = time(0);
-            
+
             uint32_t num_processed_bytes = 0;
             while (num_processed_bytes < num_recv_bytes)
             {
@@ -415,50 +427,80 @@ void *recv_thread_fun(void *)
                 key.cta_id_y = ri->cta_id_y;
                 key.cta_id_z = ri->cta_id_z;
                 key.warp_id = ri->warp_id;
-                
+
                 // Create trace record
                 TraceRecord trace;
                 trace.opcode_id = ri->opcode_id;
                 trace.pc = ri->pc;
-                
+
                 // Store register values
                 trace.reg_values.resize(ri->num_regs);
-                for (int reg_idx = 0; reg_idx < ri->num_regs; reg_idx++) {
+                for (int reg_idx = 0; reg_idx < ri->num_regs; reg_idx++)
+                {
                     trace.reg_values[reg_idx].resize(32);
-                    for (int i = 0; i < 32; i++) {
+                    for (int i = 0; i < 32; i++)
+                    {
                         trace.reg_values[reg_idx][i] = ri->reg_vals[i][reg_idx];
                     }
                 }
-                
+
                 // Add trace to the warp's trace vector
-                if (store_last_traces_only) {
+                if (store_last_traces_only)
+                {
                     // If we're only keeping the last trace in memory, clear any existing traces
                     // and just add this one
-                    if (warp_traces.find(key) != warp_traces.end()) {
-                        warp_traces[key].clear();  // Clear existing traces
+                    if (warp_traces.find(key) != warp_traces.end())
+                    {
+                        warp_traces[key].clear(); // Clear existing traces
                     }
-                    warp_traces[key].push_back(trace);  // Add the new trace
-                } else {
+                    warp_traces[key].push_back(trace); // Add the new trace
+                }
+                else
+                {
                     // Normal mode: keep all traces in memory
                     warp_traces[key].push_back(trace);
                 }
-                
+
+                // Dump intermediate trace if enabled
+                if (dump_intermedia_trace)
+                {
+                    printf("INTERMEDIATE TRACE - CTA %d,%d,%d - warp %d:\n",
+                           key.cta_id_x, key.cta_id_y, key.cta_id_z, key.warp_id);
+                    printf("  %s - PC 0x%lx\n",
+                           id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
+
+                    for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++)
+                    {
+                        printf("  * ");
+                        for (int i = 0; i < 32; i++)
+                        {
+                            printf("Reg%zu_T%d: 0x%08x ",
+                                   reg_idx, i, trace.reg_values[reg_idx][i]);
+                        }
+                        printf("\n");
+                    }
+                    printf("\n");
+                }
+
                 num_processed_bytes += sizeof(reg_info_t);
             }
-        } else {
+        }
+        else
+        {
             // If no data received, sleep for a short time to avoid busy waiting
             usleep(100000); // Sleep for 100ms
         }
     }
-    
+
     // If timeout occurred, dump the currently collected traces
-    if (timeout_occurred) {
+    if (timeout_occurred)
+    {
         dump_trace_logs(warp_traces, true, current_kernel_name);
     }
-    
+
     // Clear the map after printing
     warp_traces.clear();
-    
+
     free(recv_buffer);
     recv_thread_done = RecvThreadState::FINISHED;
     return NULL;
@@ -490,137 +532,162 @@ void nvbit_at_ctx_term(CUcontext ctx)
 }
 
 // Add a function to handle logging
-void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>>& traces, bool timeout_occurred, const char* kernel_name) {
+void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, bool timeout_occurred, const char *kernel_name)
+{
     // Only create log files if logging is enabled
-    if (!enable_logging) {
+    if (!enable_logging)
+    {
         // If logging is disabled but a timeout occurred, still print a warning to stdout
-        if (timeout_occurred) {
-            printf("\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n", 
+        if (timeout_occurred)
+        {
+            printf("\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n",
                    deadlock_timeout);
             printf("Logging is disabled. Set ENABLE_LOGGING=1 to generate detailed logs.\n\n");
         }
         return;
     }
-    
+
     // Generate filename with current date and time
     time_t now = time(0);
     struct tm *timeinfo = localtime(&now);
     char timestamp[40]; // Reduced size to ensure it fits
     strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", timeinfo);
-    
+
     // If kernel name is provided, add it to the filename
     char kernel_suffix[256] = "";
-    if (kernel_name) {
+    if (kernel_name)
+    {
         snprintf(kernel_suffix, sizeof(kernel_suffix), "_%s", kernel_name);
     }
-    
-    FILE* logfile = stdout; // Default to stdout
-    FILE* last_traces_file = stdout; // Default to stdout
-    
-    if (!log_to_stdout) {
+
+    FILE *logfile = stdout;          // Default to stdout
+    FILE *last_traces_file = stdout; // Default to stdout
+
+    if (!log_to_stdout)
+    {
         // Use snprintf instead of sprintf to avoid buffer overflow
         char filename[256]; // Increased buffer size
         snprintf(filename, sizeof(filename), "deadlock_detection%s_%s.log", kernel_suffix, timestamp);
-        
+
         // Open file for writing
         logfile = fopen(filename, "w");
-        if (!logfile) {
+        if (!logfile)
+        {
             printf("Error: Could not open log file %s for writing\n", filename);
             logfile = stdout; // Fallback to stdout if file can't be opened
-        } else {
+        }
+        else
+        {
             printf("Writing trace information to %s\n", filename);
         }
-        
+
         // Always create a file for the last traces, regardless of timeout
         char last_traces_filename[256]; // Increased buffer size
         snprintf(last_traces_filename, sizeof(last_traces_filename), "last_traces%s_%s.log", kernel_suffix, timestamp);
-        
+
         last_traces_file = fopen(last_traces_filename, "w");
-        if (!last_traces_file) {
+        if (!last_traces_file)
+        {
             printf("Error: Could not open last traces file %s for writing\n", last_traces_filename);
             last_traces_file = stdout; // Fallback to stdout
-        } else {
+        }
+        else
+        {
             printf("Writing last traces to %s\n", last_traces_filename);
         }
     }
-    
+
     // Write last traces information
     fprintf(last_traces_file, "\n===== LAST TRACES FOR EACH WARP =====\n\n");
-    
+
     // If kernel name is provided, add it to the log
-    if (kernel_name) {
+    if (kernel_name)
+    {
         fprintf(last_traces_file, "Kernel: %s\n\n", kernel_name);
     }
-    
+
     // Only print deadlock message if timeout occurred
-    if (timeout_occurred) {
-        fprintf(last_traces_file, "!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n\n", 
-               deadlock_timeout);
+    if (timeout_occurred)
+    {
+        fprintf(last_traces_file, "!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n\n",
+                deadlock_timeout);
     }
-    
+
     // Print the last trace for each warp
-    for (const auto& entry : traces) {
-        const WarpKey& warp = entry.first;
-        const std::vector<TraceRecord>& trace_records = entry.second;
-        
-        if (!trace_records.empty()) {
-            const TraceRecord& last_trace = trace_records.back();
-            
-            fprintf(last_traces_file, "CTA %d,%d,%d - warp %d - Last trace:\n", 
-                   warp.cta_id_x, warp.cta_id_y, warp.cta_id_z, warp.warp_id);
-            
-            fprintf(last_traces_file, "  %s - PC 0x%lx\n", 
-                   id_to_sass_map[last_trace.opcode_id].c_str(), last_trace.pc);
-            
-            for (size_t reg_idx = 0; reg_idx < last_trace.reg_values.size(); reg_idx++) {
+    for (const auto &entry : traces)
+    {
+        const WarpKey &warp = entry.first;
+        const std::vector<TraceRecord> &trace_records = entry.second;
+
+        if (!trace_records.empty())
+        {
+            const TraceRecord &last_trace = trace_records.back();
+
+            fprintf(last_traces_file, "CTA %d,%d,%d - warp %d - Last trace:\n",
+                    warp.cta_id_x, warp.cta_id_y, warp.cta_id_z, warp.warp_id);
+
+            fprintf(last_traces_file, "  %s - PC 0x%lx\n",
+                    id_to_sass_map[last_trace.opcode_id].c_str(), last_trace.pc);
+
+            for (size_t reg_idx = 0; reg_idx < last_trace.reg_values.size(); reg_idx++)
+            {
                 fprintf(last_traces_file, "  * ");
-                for (int i = 0; i < 32; i++) {
-                    fprintf(last_traces_file, "Reg%zu_T%d: 0x%08x ", 
-                           reg_idx, i, last_trace.reg_values[reg_idx][i]);
+                for (int i = 0; i < 32; i++)
+                {
+                    fprintf(last_traces_file, "Reg%zu_T%d: 0x%08x ",
+                            reg_idx, i, last_trace.reg_values[reg_idx][i]);
                 }
                 fprintf(last_traces_file, "\n");
             }
             fprintf(last_traces_file, "\n");
         }
     }
-    
+
     // Close the last traces file if it's not stdout
-    if (last_traces_file != stdout) {
+    if (last_traces_file != stdout)
+    {
         fclose(last_traces_file);
     }
-    
+
     // Only print full trace information if not in log_last_traces_only mode
-    if (!log_last_traces_only) {
+    if (!log_last_traces_only)
+    {
         // Print all collected information to the main log file
         fprintf(logfile, "\n===== WARP TRACE INFORMATION =====\n\n");
-        
+
         // If kernel name is provided, add it to the log
-        if (kernel_name) {
+        if (kernel_name)
+        {
             fprintf(logfile, "Kernel: %s\n\n", kernel_name);
         }
-        
-        if (timeout_occurred) {
-            fprintf(logfile, "!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n\n", 
-                   deadlock_timeout);
+
+        if (timeout_occurred)
+        {
+            fprintf(logfile, "!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n\n",
+                    deadlock_timeout);
         }
-        
-        for (const auto& entry : traces) {
-            const WarpKey& warp = entry.first;
-            const std::vector<TraceRecord>& trace_records = entry.second;
-            
-            fprintf(logfile, "CTA %d,%d,%d - warp %d - Total traces: %zu\n", 
-                   warp.cta_id_x, warp.cta_id_y, warp.cta_id_z, 
-                   warp.warp_id, trace_records.size());
-            
-            for (size_t trace_idx = 0; trace_idx < trace_records.size(); trace_idx++) {
-                const TraceRecord& trace = trace_records[trace_idx];
-                
-                fprintf(logfile, "  Trace %zu: %s - PC 0x%lx\n", 
-                       trace_idx, id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
-                       
-                for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++) {
+
+        for (const auto &entry : traces)
+        {
+            const WarpKey &warp = entry.first;
+            const std::vector<TraceRecord> &trace_records = entry.second;
+
+            fprintf(logfile, "CTA %d,%d,%d - warp %d - Total traces: %zu\n",
+                    warp.cta_id_x, warp.cta_id_y, warp.cta_id_z,
+                    warp.warp_id, trace_records.size());
+
+            for (size_t trace_idx = 0; trace_idx < trace_records.size(); trace_idx++)
+            {
+                const TraceRecord &trace = trace_records[trace_idx];
+
+                fprintf(logfile, "  Trace %zu: %s - PC 0x%lx\n",
+                        trace_idx, id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
+
+                for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++)
+                {
                     fprintf(logfile, "  * ");
-                    for (int i = 0; i < 32; i++) {
+                    for (int i = 0; i < 32; i++)
+                    {
                         fprintf(logfile, "Reg%zu_T%d: 0x%08x ", reg_idx, i, trace.reg_values[reg_idx][i]);
                     }
                     fprintf(logfile, "\n");
@@ -630,9 +697,10 @@ void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>>& traces, 
             fprintf(logfile, "\n");
         }
     }
-    
+
     // Close the file if it's not stdout
-    if (logfile != stdout) {
+    if (logfile != stdout)
+    {
         fclose(logfile);
     }
 }
