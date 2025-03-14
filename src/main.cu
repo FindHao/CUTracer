@@ -494,8 +494,9 @@ void *recv_thread_fun(void *)
                     {
                         printf("INTERMEDIATE TRACE - CTA %d,%d,%d - warp %d:\n",
                                key.cta_id_x, key.cta_id_y, key.cta_id_z, key.warp_id);
+                        // To match with the PC offset in ncu reports
                         printf("  %s - PC Offset %ld\n",
-                               id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
+                               id_to_sass_map[trace.opcode_id].c_str(), (trace.pc / 16) + 1);
 
                         for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++)
                         {
