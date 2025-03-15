@@ -62,7 +62,7 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
     ri.cta_id_x = cta.x;
     ri.cta_id_y = cta.y;
     ri.cta_id_z = cta.z;
-    ri.warp_id = get_warpid();
+    ri.warp_id = get_global_warp_id();
     ri.opcode_id = opcode_id;
     ri.num_regs = num_regs;
     ri.pc = pc;
