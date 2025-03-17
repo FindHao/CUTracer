@@ -129,6 +129,9 @@ int dump_intermedia_trace_timeout = 0; // Default: no timeout (0 means unlimited
 /* Store the name of the currently executing kernel */
 char *current_kernel_name = NULL;
 
+// Add a variable to store function name patterns to instrument
+std::vector<std::string> function_patterns;
+
 // Function to handle logging of trace data
 void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces,
                      bool timeout_occurred, const char *kernel_name = nullptr);
@@ -158,6 +161,44 @@ void nvbit_at_init()
                 "Dump intermediate trace data to stdout (1=enabled, 0=disabled)");
     GET_VAR_INT(dump_intermedia_trace_timeout, "DUMP_INTERMEDIA_TRACE_TIMEOUT", 0,
                 "Timeout in seconds for intermediate trace dumping (0=unlimited)");
+
+    // Get function patterns from environment variable
+    const char *patterns_env = getenv("FUNC_NAME_FILTER");
+    if (patterns_env)
+    {
+        std::string patterns_str(patterns_env);
+        size_t pos = 0;
+        std::string token;
+        // Split the string by commas
+        while ((pos = patterns_str.find(',')) != std::string::npos)
+        {
+            token = patterns_str.substr(0, pos);
+            if (!token.empty())
+            {
+                function_patterns.push_back(token);
+            }
+            patterns_str.erase(0, pos + 1);
+        }
+        // Add the last token if it exists
+        if (!patterns_str.empty())
+        {
+            function_patterns.push_back(patterns_str);
+        }
+
+        if (verbose)
+        {
+            printf("Function name filters to instrument:\n");
+            for (const auto &pattern : function_patterns)
+            {
+                printf("  - %s\n", pattern.c_str());
+            }
+        }
+    }
+    else if (verbose)
+    {
+        printf("No function name filters specified. Instrumenting all functions.\n");
+    }
+
     std::string pad(100, '-');
     printf("%s\n", pad.c_str());
 }
@@ -183,6 +224,46 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
         {
             continue;
         }
+        // Get function name (both mangled and unmangled versions)
+        const char *unmangled_name = nvbit_get_func_name(ctx, f, false);
+        const char *mangled_name = nvbit_get_func_name(ctx, f, true);
+
+        // Check if function name contains any of the patterns
+        bool should_instrument = true; // Default to true if no filters specified
+
+        if (!function_patterns.empty())
+        {
+            should_instrument = false; // Start with false when we have filters
+            for (const auto &pattern : function_patterns)
+            {
+                if ((unmangled_name && strstr(unmangled_name, pattern.c_str()) != NULL) ||
+                    (mangled_name && strstr(mangled_name, pattern.c_str()) != NULL))
+                {
+                    should_instrument = true;
+                    if (verbose)
+                    {
+                        printf("Found matching function for filter '%s': %s (mangled: %s)\n",
+                               pattern.c_str(),
+                               unmangled_name ? unmangled_name : "unknown",
+                               mangled_name ? mangled_name : "unknown");
+                    }
+                    break;
+                }
+            }
+        }
+        else if (verbose)
+        {
+            printf("Instrumenting function: %s (mangled: %s)\n",
+                   unmangled_name ? unmangled_name : "unknown",
+                   mangled_name ? mangled_name : "unknown");
+        }
+
+        // Skip this function if it doesn't match any pattern
+        if (!should_instrument)
+        {
+            continue;
+        }
+
         const std::vector<Instr *> &instrs = nvbit_get_instrs(ctx, f);
         if (verbose)
         {
