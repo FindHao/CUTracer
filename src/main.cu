@@ -295,6 +295,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
 
             int opcode_id = sass_to_id_map[instr->getSass()];
             std::vector<int> reg_num_list;
+            std::vector<int> unified_reg_num_list;
             /* iterate on the operands */
             for (int i = 0; i < instr->getNumOperands(); i++)
             {
@@ -305,6 +306,13 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
                     for (int reg_idx = 0; reg_idx < instr->getSize() / 4; reg_idx++)
                     {
                         reg_num_list.push_back(op->u.reg.num + reg_idx);
+                    }
+                }
+                else if (op->type == InstrType::OperandType::UREG)
+                {
+                    for (int reg_idx = 0; reg_idx < instr->getSize() / 4; reg_idx++)
+                    {
+                        unified_reg_num_list.push_back(op->u.reg.num + reg_idx);
                     }
                 }
             }
@@ -322,11 +330,16 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
             nvbit_add_call_arg_const_val64(instr, instr->getOffset());
             /* how many register values are passed next */
             nvbit_add_call_arg_const_val32(instr, reg_num_list.size());
+            nvbit_add_call_arg_const_val32(instr, unified_reg_num_list.size());
             for (int num : reg_num_list)
             {
                 /* last parameter tells it is a variadic parameter passed to
                  * the instrument function record_reg_val() */
                 nvbit_add_call_arg_reg_val(instr, num, true);
+            }
+            for (int num : unified_reg_num_list)
+            {
+                nvbit_add_call_arg_ureg_val(instr, num, true);
             }
             cnt++;
         }
