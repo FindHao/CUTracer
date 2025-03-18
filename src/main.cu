@@ -88,7 +88,8 @@ struct TraceRecord
 {
     int opcode_id;
     uint64_t pc;
-    std::vector<std::vector<uint32_t>> reg_values; // [reg_idx][thread_idx]
+    std::vector<std::vector<uint32_t>> reg_values;  // [reg_idx][thread_idx]
+    std::vector<std::vector<uint32_t>> ureg_values; // [ureg_idx][thread_idx]
 };
 
 /* Structure to identify a warp */
@@ -295,7 +296,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
 
             int opcode_id = sass_to_id_map[instr->getSass()];
             std::vector<int> reg_num_list;
-            std::vector<int> unified_reg_num_list;
+            std::vector<int> ureg_num_list;
             /* iterate on the operands */
             for (int i = 0; i < instr->getNumOperands(); i++)
             {
@@ -312,7 +313,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
                 {
                     for (int reg_idx = 0; reg_idx < instr->getSize() / 4; reg_idx++)
                     {
-                        unified_reg_num_list.push_back(op->u.reg.num + reg_idx);
+                        ureg_num_list.push_back(op->u.reg.num + reg_idx);
                     }
                 }
             }
@@ -330,15 +331,19 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
             nvbit_add_call_arg_const_val64(instr, instr->getOffset());
             /* how many register values are passed next */
             nvbit_add_call_arg_const_val32(instr, reg_num_list.size());
-            nvbit_add_call_arg_const_val32(instr, unified_reg_num_list.size());
+            nvbit_add_call_arg_const_val32(instr, ureg_num_list.size());
+            printf("=====debuging====REG: %d\n", reg_num_list.size());
             for (int num : reg_num_list)
             {
+                printf("=====debuging====REG: %d\n", num);
                 /* last parameter tells it is a variadic parameter passed to
                  * the instrument function record_reg_val() */
                 nvbit_add_call_arg_reg_val(instr, num, true);
             }
-            for (int num : unified_reg_num_list)
+            printf("=====debuging====UREG: %d\n", ureg_num_list.size());
+            for (int num : ureg_num_list)
             {
+                printf("=====debuging====UREG: %d\n", num);
                 nvbit_add_call_arg_ureg_val(instr, num, true);
             }
             cnt++;
@@ -547,6 +552,16 @@ void *recv_thread_fun(void *)
                         trace.reg_values[reg_idx][i] = ri->reg_vals[i][reg_idx];
                     }
                 }
+                // Store unified register values
+                trace.ureg_values.resize(ri->num_uregs);
+                for (int i = 0; i < ri->num_uregs; i++)
+                {
+                    trace.ureg_values[i].resize(32);
+                    for (int j = 0; j < 32; j++)
+                    {
+                        trace.ureg_values[i][j] = ri->ureg_vals[j][i];
+                    }
+                }
 
                 // Add trace to the warp's trace vector
                 if (store_last_traces_only)
@@ -599,6 +614,17 @@ void *recv_thread_fun(void *)
                             {
                                 printf("Reg%zu_T%d: 0x%08x ",
                                        reg_idx, i, trace.reg_values[reg_idx][i]);
+                            }
+                            printf("\n");
+                        }
+                        printf("=====debuging====UREG: %d\n", trace.ureg_values.size());
+                        for (size_t i = 0; i < trace.ureg_values.size(); i++)
+                        {
+                            printf("  * ");
+                            for (int j = 0; j < 32; j++)
+                            {
+                                printf("UREG%zu_T%d: 0x%08x ",
+                                       i, j, trace.ureg_values[i][j]);
                             }
                             printf("\n");
                         }
@@ -815,6 +841,10 @@ void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, 
                         fprintf(logfile, "Reg%zu_T%d: 0x%08x ", reg_idx, i, trace.reg_values[reg_idx][i]);
                     }
                     fprintf(logfile, "\n");
+                }
+                for (size_t i = 0; i < trace.ureg_values.size(); i++)
+                {
+                    fprintf(logfile, "  * UREG%zu: 0x%08x\n", i, trace.ureg_values[i]);
                 }
                 fprintf(logfile, "\n");
             }

@@ -45,7 +45,7 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
                                                        uint64_t pchannel_dev,
                                                        uint64_t pc,
                                                        int32_t num_regs,
-                                                       int32_t num_unified_regs,
+                                                       int32_t num_uregs,
                                                        ...)
 {
     if (!pred)
@@ -68,11 +68,11 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
     ri.num_regs = num_regs;
     ri.pc = pc;
 
-    if (num_regs || num_unified_regs)
+    if (num_regs || num_uregs)
     {
         // Initialize variable argument list
         va_list vl;
-        va_start(vl, num_unified_regs);
+        va_start(vl, num_uregs);
 
         for (int i = 0; i < num_regs; i++)
         {
@@ -84,17 +84,33 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
                 ri.reg_vals[tid][i] = __shfl_sync(active_mask, val, tid);
             }
         }
+        // printf("=====debuging====UREG: %d\n", num_uregs);
         // Only the first thread in the warp needs to process unified registers
-        if (first_laneid == laneid)
+        // if (first_laneid == laneid)
+        // {
+        //     // printf("=====debuging====first_laneid: %d\n", first_laneid);
+        //     // printf("=====debuging====laneid: %d\n", laneid);
+        //     int tmp_ureg_num = num_uregs;
+        //     if (num_uregs > 0)
+        //         tmp_ureg_num = 1;
+
+        //     for (int i = 0; i < tmp_ureg_num; i++)
+        //     {
+        //         ri.ureg_vals[i] = va_arg(vl, uint32_t);
+        //     }
+        // }
+        for (int i = 0; i < num_uregs; i++)
         {
-            for (int i = 0; i < num_unified_regs; i++)
+            uint32_t val = va_arg(vl, uint32_t);
+
+            /* collect register values from other threads */
+            for (int tid = 0; tid < 32; tid++)
             {
-                reg_info.unified_reg_vals[i] = va_arg(vl, uint32_t);
+                ri.ureg_vals[tid][i] = __shfl_sync(active_mask, val, tid);
             }
         }
+        va_end(vl);
     }
-
-    va_end(vl);
 
     if (first_laneid == laneid)
     {
