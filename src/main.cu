@@ -316,6 +316,15 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
                         ureg_num_list.push_back(op->u.reg.num + reg_idx);
                     }
                 }
+                else if (op->type == InstrType::OperandType::MREF)
+                {
+                    // Not sure if this is correct
+                    if (op->u.mref.has_desc)
+                    {
+                        ureg_num_list.push_back(op->u.mref.desc_ureg_num);
+                        ureg_num_list.push_back(op->u.mref.desc_ureg_num + 1);
+                    }
+                }
             }
             /* insert call to the instrumentation function with its
              * arguments */
