@@ -33,7 +33,8 @@
 
 /* information collected in the instrumentation function and passed
  * on the channel from the GPU to the CPU */
-typedef struct {
+typedef struct
+{
     uint64_t grid_launch_id;
     int cta_id_x;
     int cta_id_y;
@@ -51,8 +52,11 @@ typedef struct
     int32_t cta_id_z;
     int32_t warp_id;
     int32_t opcode_id;
+    uint64_t pc; // Program counter for the instruction
     int32_t num_regs;
-    uint64_t pc;  // Program counter for the instruction
-    /* 32 lanes, each thread can store up to 5 register values */
-    uint32_t reg_vals[32][32];
+    /* 32 lanes, each thread can store up to 8 register values */
+    uint32_t reg_vals[32][8];
+    int32_t num_uregs;
+    // unified registers shared by all threads in the same warp
+    uint32_t ureg_vals[8];
 } reg_info_t;
