@@ -6,7 +6,8 @@
     {                                                                       \
         call;                                                               \
         cudaError err = cudaGetLastError();                                 \
-        if (cudaSuccess != err) {                                           \
+        if (cudaSuccess != err)                                             \
+        {                                                                   \
             fprintf(                                                        \
                 stderr,                                                     \
                 "Cuda error in function '%s' file '%s' in line %i : %s.\n", \
@@ -16,20 +17,23 @@
         }                                                                   \
     }
 
-
 // CUDA kernel. Each thread takes care of one element of c
-__global__ void vecAdd(double *a, double *b, double *c, int n) {
+__global__ void vecAdd(double *a, double *b, double *c, int n)
+{
     // Get our global thread ID
     int id = blockIdx.x * blockDim.x + threadIdx.x;
 
     // Make sure we do not go out of bounds
-    if (id < n) c[id] = a[id] + b[id];
+    if (id < n)
+        c[id] = a[id] + b[id];
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[])
+{
     // Size of vectors
-    int n = 100000;
-    if (argc > 1) n = atoi(argv[1]);
+    int n = 128;
+    if (argc > 1)
+        n = atoi(argv[1]);
 
     // Host input vectors
     double *h_a;
@@ -58,7 +62,8 @@ int main(int argc, char *argv[]) {
 
     int i;
     // Initialize vectors on host
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < n; i++)
+    {
         h_a[i] = sin(i) * sin(i);
         h_b[i] = cos(i) * cos(i);
         h_c[i] = 0;
@@ -86,7 +91,8 @@ int main(int argc, char *argv[]) {
     // Sum up vector c and print result divided by n, this should equal 1 within
     // error
     double sum = 0;
-    for (i = 0; i < n; i++) sum += h_c[i];
+    for (i = 0; i < n; i++)
+        sum += h_c[i];
     printf("Final sum = %f; sum/n = %f (should be ~1)\n", sum, sum / n);
 
     // Release device memory
