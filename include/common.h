@@ -58,5 +58,5 @@ typedef struct
     uint32_t reg_vals[32][8];
     int32_t num_uregs;
     // unified registers shared by all threads in the same warp
-    uint32_t ureg_vals[32][8];
+    uint32_t ureg_vals[8];
 } reg_info_t;

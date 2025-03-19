@@ -66,6 +66,7 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
     ri.warp_id = get_global_warp_id();
     ri.opcode_id = opcode_id;
     ri.num_regs = num_regs;
+    ri.num_uregs = num_uregs;
     ri.pc = pc;
 
     if (num_regs || num_uregs)
@@ -73,7 +74,6 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
         // Initialize variable argument list
         va_list vl;
         va_start(vl, num_uregs);
-
         for (int i = 0; i < num_regs; i++)
         {
             uint32_t val = va_arg(vl, uint32_t);
@@ -84,31 +84,15 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
                 ri.reg_vals[tid][i] = __shfl_sync(active_mask, val, tid);
             }
         }
-        // printf("=====debuging====UREG: %d\n", num_uregs);
         // Only the first thread in the warp needs to process unified registers
-        // if (first_laneid == laneid)
-        // {
-        //     // printf("=====debuging====first_laneid: %d\n", first_laneid);
-        //     // printf("=====debuging====laneid: %d\n", laneid);
-        //     int tmp_ureg_num = num_uregs;
-        //     if (num_uregs > 0)
-        //         tmp_ureg_num = 1;
-
-        //     for (int i = 0; i < tmp_ureg_num; i++)
-        //     {
-        //         ri.ureg_vals[i] = va_arg(vl, uint32_t);
-        //     }
-        // }
-        for (int i = 0; i < num_uregs; i++)
+        if (first_laneid == laneid)
         {
-            uint32_t val = va_arg(vl, uint32_t);
-
-            /* collect register values from other threads */
-            for (int tid = 0; tid < 32; tid++)
+            for (int i = 0; i < num_uregs; i++)
             {
-                ri.ureg_vals[tid][i] = __shfl_sync(active_mask, val, tid);
+                ri.ureg_vals[i] = va_arg(vl, uint32_t);
             }
         }
+
         va_end(vl);
     }
 

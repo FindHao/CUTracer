@@ -88,8 +88,8 @@ struct TraceRecord
 {
     int opcode_id;
     uint64_t pc;
-    std::vector<std::vector<uint32_t>> reg_values;  // [reg_idx][thread_idx]
-    std::vector<std::vector<uint32_t>> ureg_values; // [ureg_idx][thread_idx]
+    std::vector<std::vector<uint32_t>> reg_values; // [reg_idx][thread_idx]
+    std::vector<uint32_t> ureg_values;             // [ureg_idx]
 };
 
 /* Structure to identify a warp */
@@ -332,18 +332,14 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func)
             /* how many register values are passed next */
             nvbit_add_call_arg_const_val32(instr, reg_num_list.size());
             nvbit_add_call_arg_const_val32(instr, ureg_num_list.size());
-            printf("=====debuging====REG: %d\n", reg_num_list.size());
             for (int num : reg_num_list)
             {
-                printf("=====debuging====REG: %d\n", num);
                 /* last parameter tells it is a variadic parameter passed to
                  * the instrument function record_reg_val() */
                 nvbit_add_call_arg_reg_val(instr, num, true);
             }
-            printf("=====debuging====UREG: %d\n", ureg_num_list.size());
             for (int num : ureg_num_list)
             {
-                printf("=====debuging====UREG: %d\n", num);
                 nvbit_add_call_arg_ureg_val(instr, num, true);
             }
             cnt++;
@@ -556,11 +552,7 @@ void *recv_thread_fun(void *)
                 trace.ureg_values.resize(ri->num_uregs);
                 for (int i = 0; i < ri->num_uregs; i++)
                 {
-                    trace.ureg_values[i].resize(32);
-                    for (int j = 0; j < 32; j++)
-                    {
-                        trace.ureg_values[i][j] = ri->ureg_vals[j][i];
-                    }
+                    trace.ureg_values[i] = ri->ureg_vals[i];
                 }
 
                 // Add trace to the warp's trace vector
@@ -617,16 +609,9 @@ void *recv_thread_fun(void *)
                             }
                             printf("\n");
                         }
-                        printf("=====debuging====UREG: %d\n", trace.ureg_values.size());
                         for (size_t i = 0; i < trace.ureg_values.size(); i++)
                         {
-                            printf("  * ");
-                            for (int j = 0; j < 32; j++)
-                            {
-                                printf("UREG%zu_T%d: 0x%08x ",
-                                       i, j, trace.ureg_values[i][j]);
-                            }
-                            printf("\n");
+                            printf("  * UREG%zu: 0x%08x\n", i, trace.ureg_values[i]);
                         }
                         printf("\n");
                     }
@@ -788,6 +773,10 @@ void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, 
                             reg_idx, i, last_trace.reg_values[reg_idx][i]);
                 }
                 fprintf(last_traces_file, "\n");
+            }
+            for (size_t i = 0; i < last_trace.ureg_values.size(); i++)
+            {
+                fprintf(last_traces_file, "  * UREG%zu: 0x%08x\n", i, last_trace.ureg_values[i]);
             }
             fprintf(last_traces_file, "\n");
         }
