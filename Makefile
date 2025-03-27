@@ -1,5 +1,5 @@
 # Project name
-PROJECT := deadlock_tracker
+PROJECT := cutracer
 
 # Compiler settings
 CXX ?=
@@ -39,7 +39,7 @@ LIB_DIR := lib/
 
 # NVBIT settings
 NVBIT_PATH=./third_party/nvbit/core
-INCLUDES=-I$(NVBIT_PATH) -I./include 
+INCLUDES=-I$(NVBIT_PATH) -I./include
 
 # Libraries
 LIBS=-L$(NVBIT_PATH) -lnvbit
