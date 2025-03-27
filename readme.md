@@ -1,24 +1,29 @@
-# Deadlock Tracker
+# CUTracer
 
-A dynamic binary instrumentation tool for detecting and diagnosing deadlocks in CUDA applications. Built on top of NVIDIA's NVBit framework.
+A comprehensive dynamic binary instrumentation tool for tracing and analyzing CUDA kernel instructions. Built on top of NVIDIA's NVBit framework.
 
 ## Overview
 
-The Deadlock Tracker is a debugging tool that monitors CUDA kernel execution and detects
-potential deadlocks by tracking warp activity patterns. 
+CUTracer is a powerful debugging and analysis tool that monitors CUDA kernel execution at the instruction level. It provides detailed tracing of GPU operations, enabling developers to:
 
-- When a kernel exceeds a configurable timeout period, the tool can provide detailed trace information about the last instructions executed by each warp, helping developers identify the root cause of deadlocks or hangs in their CUDA applications.
+- Capture and analyze instruction execution patterns
+- Monitor register values and memory operations
+- Detect execution anomalies including deadlocks and hangs
+- Gain deeper insights into kernel behavior for performance optimization
 
 ## Features
 
 - Dynamic binary instrumentation with no need to modify or recompile the target application
-- Configurable timeout for deadlock detection
-- Detailed trace information for debugging:
-  - Register values
+- Comprehensive instruction-level tracing for all CUDA kernels
+- Detailed execution information for debugging and analysis:
+  - Register values and changes
   - Instruction program counters
-  - Warp and thread block identifiers
+  - Warp and thread block execution patterns
+  - Memory access patterns
+- Deadlock detection with configurable timeouts
 - Ability to filter instrumentation by function name patterns
-- Various logging options for customizing output
+- Flexible logging options for customizing output
+- Minimal impact on application behavior
 
 ## Requirements
 
@@ -44,15 +49,15 @@ All requirements are aligned with NVBit.
 
 ## Usage
 
-To use the Deadlock Tracker, simply preload it before launching your CUDA application:
+To use CUTracer, simply preload it before launching your CUDA application:
 
 ```bash
-CUDA_INJECTION64_PATH=/path/to/lib/deadlock_tracker.so ./your_cuda_application
+CUDA_INJECTION64_PATH=/path/to/lib/cutracer.so ./your_cuda_application
 ```
 
 ## Configuration
 
-The Deadlock Tracker can be configured using environment variables:
+CUTracer can be configured using environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -73,13 +78,13 @@ The Deadlock Tracker can be configured using environment variables:
 ### Basic Example
 
 ```bash
-DEADLOCK_TIMEOUT=30 FUNC_NAME_FILTER=kernel_a,kernel_b CUDA_INJECTION64_PATH=./lib/deadlock_tracker.so ./my_cuda_app
+DEADLOCK_TIMEOUT=30 FUNC_NAME_FILTER=kernel_a,kernel_b CUDA_INJECTION64_PATH=./lib/cutracer.so ./my_cuda_app
 ```
 
 This will:
 - Set the deadlock detection timeout to 30 seconds
 - Only instrument functions with names containing "kernel_a" or "kernel_b"
-- Run the application with deadlock tracking enabled
+- Run the application with instruction tracing enabled
 
 ### Advanced Example: PyTorch with Flash Attention
 
@@ -90,7 +95,7 @@ TOOL_VERBOSE=1 \
 DUMP_INTERMEDIA_TRACE=1 \
 DUMP_INTERMEDIA_TRACE_TIMEOUT=10 \
 FUNC_NAME_FILTER=attn \
-CUDA_INJECTION64_PATH=~/path/to/deadlock_tracker/lib/deadlock_tracker.so \
+CUDA_INJECTION64_PATH=~/path/to/deadlock_tracker/lib/cutracer.so \
 python run.py --op flash_attention --batch 8 --seq-len 8192 --n-heads 16 --d-head 128 > deadlock_trace.log 2>&1
 ```
 
@@ -161,13 +166,22 @@ c[0x0][0x28] ; - PC Offset 1 (0x0)` is the first instruction executed by the war
 
 ## How It Works
 
-The Deadlock Tracker uses NVIDIA's NVBit (NVIDIA Binary Instrumentation Tool) to dynamically instrument CUDA applications. It:
+CUTracer uses NVIDIA's NVBit (NVIDIA Binary Instrumentation Tool) to dynamically instrument CUDA applications. It:
 
 1. Intercepts CUDA kernel launches
 2. Instruments kernel code with data collection functions
-3. Reports detailed information if a kernel exceeds the timeout threshold
+3. Captures instruction execution data in real-time
+4. Analyzes execution patterns and reports detailed information
 
-For each instrumented instruction, the tool collects register values, program counters, and execution context information, which are transmitted from the GPU to the CPU for analysis.
+For each instrumented instruction, the tool collects register values, program counters, and execution context information, which are transmitted from the GPU to the CPU for analysis. This approach provides comprehensive insights into kernel behavior without requiring source code modifications.
+
+## Use Cases
+
+- **Performance optimization**: Identify bottlenecks and inefficient execution patterns
+- **Debugging complex issues**: Trace through problematic kernels to pinpoint errors
+- **Deadlock detection**: Identify when kernels stop making progress
+- **Algorithm analysis**: Understand the execution flow of complex GPU algorithms
+- **Memory access pattern analysis**: Track how threads access memory for optimization
 
 ## Limitations
 
@@ -180,8 +194,6 @@ For each instrumented instruction, the tool collects register values, program co
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 This project uses NVBit (protected by NVIDIA CUDA Toolkit EULA) as a dependency.
-
-
 
 ## Acknowledgements
 
