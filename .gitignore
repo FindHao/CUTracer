@@ -63,4 +63,4 @@ deps/
 nvbit_release/
 
 *.log
-third_party/nvbit/test-apps/vectoradd/vectoradd
+third_party/nvbit
