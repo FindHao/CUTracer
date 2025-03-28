@@ -29,9 +29,9 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdarg.h>
 
 #include "utils/utils.h"
 
@@ -41,64 +41,85 @@
 /* contains definition of the mem_access_t structure */
 #include "common.h"
 
-extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id,
-                                                       uint64_t pchannel_dev,
-                                                       uint64_t pc,
-                                                       int32_t num_regs,
-                                                       int32_t num_uregs,
-                                                       ...)
-{
-    if (!pred)
-    {
-        return;
+extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id, uint64_t pchannel_dev, uint64_t pc,
+                                                       int32_t num_regs, int32_t num_uregs, ...) {
+  if (!pred) {
+    return;
+  }
+
+  int active_mask = __ballot_sync(__activemask(), 1);
+  const int laneid = get_laneid();
+  const int first_laneid = __ffs(active_mask) - 1;
+
+  reg_info_t ri;
+
+  int4 cta = get_ctaid();
+  ri.cta_id_x = cta.x;
+  ri.cta_id_y = cta.y;
+  ri.cta_id_z = cta.z;
+  ri.warp_id = get_global_warp_id();
+  ri.opcode_id = opcode_id;
+  ri.num_regs = num_regs;
+  ri.num_uregs = num_uregs;
+  ri.pc = pc;
+
+  if (num_regs || num_uregs) {
+    // Initialize variable argument list
+    va_list vl;
+    va_start(vl, num_uregs);
+    for (int i = 0; i < num_regs; i++) {
+      uint32_t val = va_arg(vl, uint32_t);
+
+      /* collect register values from other threads */
+      for (int tid = 0; tid < 32; tid++) {
+        ri.reg_vals[tid][i] = __shfl_sync(active_mask, val, tid);
+      }
+    }
+    // Only the first thread in the warp needs to process unified registers
+    if (first_laneid == laneid) {
+      for (int i = 0; i < num_uregs; i++) {
+        ri.ureg_vals[i] = va_arg(vl, uint32_t);
+      }
     }
 
-    int active_mask = __ballot_sync(__activemask(), 1);
-    const int laneid = get_laneid();
-    const int first_laneid = __ffs(active_mask) - 1;
+    va_end(vl);
+  }
 
-    reg_info_t ri;
+  if (first_laneid == laneid) {
+    ChannelDev *channel_dev = (ChannelDev *)pchannel_dev;
+    channel_dev->push(&ri, sizeof(reg_info_t));
+  }
+}
 
-    int4 cta = get_ctaid();
-    ri.cta_id_x = cta.x;
-    ri.cta_id_y = cta.y;
-    ri.cta_id_z = cta.z;
-    ri.warp_id = get_global_warp_id();
-    ri.opcode_id = opcode_id;
-    ri.num_regs = num_regs;
-    ri.num_uregs = num_uregs;
-    ri.pc = pc;
+extern "C" __device__ __noinline__ void instrument_mem(int pred, int opcode_id, uint64_t addr, uint64_t grid_launch_id,
+                                                       uint64_t pchannel_dev) {
+  /* if thread is predicated off, return */
+  if (!pred) {
+    return;
+  }
 
-    if (num_regs || num_uregs)
-    {
-        // Initialize variable argument list
-        va_list vl;
-        va_start(vl, num_uregs);
-        for (int i = 0; i < num_regs; i++)
-        {
-            uint32_t val = va_arg(vl, uint32_t);
+  int active_mask = __ballot_sync(__activemask(), 1);
+  const int laneid = get_laneid();
+  const int first_laneid = __ffs(active_mask) - 1;
 
-            /* collect register values from other threads */
-            for (int tid = 0; tid < 32; tid++)
-            {
-                ri.reg_vals[tid][i] = __shfl_sync(active_mask, val, tid);
-            }
-        }
-        // Only the first thread in the warp needs to process unified registers
-        if (first_laneid == laneid)
-        {
-            for (int i = 0; i < num_uregs; i++)
-            {
-                ri.ureg_vals[i] = va_arg(vl, uint32_t);
-            }
-        }
+  mem_access_t ma;
 
-        va_end(vl);
-    }
+  /* collect memory address information from other threads */
+  for (int i = 0; i < 32; i++) {
+    ma.addrs[i] = __shfl_sync(active_mask, addr, i);
+  }
 
-    if (first_laneid == laneid)
-    {
-        ChannelDev *channel_dev = (ChannelDev *)pchannel_dev;
-        channel_dev->push(&ri, sizeof(reg_info_t));
-    }
+  int4 cta = get_ctaid();
+  ma.grid_launch_id = grid_launch_id;
+  ma.cta_id_x = cta.x;
+  ma.cta_id_y = cta.y;
+  ma.cta_id_z = cta.z;
+  ma.warp_id = get_warpid();
+  ma.opcode_id = opcode_id;
+
+  /* first active lane pushes information on the channel */
+  if (first_laneid == laneid) {
+    ChannelDev *channel_dev = (ChannelDev *)pchannel_dev;
+    channel_dev->push(&ma, sizeof(mem_access_t));
+  }
 }
