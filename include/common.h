@@ -31,20 +31,18 @@
 
 #include <stdint.h>
 
+/* Message type enum to identify different message types */
+typedef enum { MSG_TYPE_REG_INFO = 0, MSG_TYPE_MEM_ACCESS = 1 } message_type_t;
+
+/* Common header for all message types */
+typedef struct {
+  message_type_t type;  // Type of the message
+} message_header_t;
+
 /* information collected in the instrumentation function and passed
  * on the channel from the GPU to the CPU */
 typedef struct {
-  uint64_t grid_launch_id;
-  int cta_id_x;
-  int cta_id_y;
-  int cta_id_z;
-  int warp_id;
-  int opcode_id;
-  uint64_t addrs[32];
-} mem_access_t;
-/* information collected in the instrumentation function and passed
- * on the channel from the GPU to the CPU */
-typedef struct {
+  message_header_t header;  // Common header with type=MSG_TYPE_REG_INFO
   int32_t cta_id_x;
   int32_t cta_id_y;
   int32_t cta_id_z;
@@ -58,3 +56,16 @@ typedef struct {
   // unified registers shared by all threads in the same warp
   uint32_t ureg_vals[8];
 } reg_info_t;
+
+/* memory access information collected and passed
+ * on the channel from the GPU to the CPU */
+typedef struct {
+  message_header_t header;  // Common header with type=MSG_TYPE_MEM_ACCESS
+  uint64_t grid_launch_id;
+  int cta_id_x;
+  int cta_id_y;
+  int cta_id_z;
+  int warp_id;
+  int opcode_id;
+  uint64_t addrs[32];
+} mem_access_t;

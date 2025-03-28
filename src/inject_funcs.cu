@@ -52,6 +52,9 @@ extern "C" __device__ __noinline__ void record_reg_val(int pred, int opcode_id, 
   const int first_laneid = __ffs(active_mask) - 1;
 
   reg_info_t ri;
+  
+  // 设置消息类型为寄存器信息
+  ri.header.type = MSG_TYPE_REG_INFO;
 
   int4 cta = get_ctaid();
   ri.cta_id_x = cta.x;
@@ -103,6 +106,9 @@ extern "C" __device__ __noinline__ void instrument_mem(int pred, int opcode_id, 
   const int first_laneid = __ffs(active_mask) - 1;
 
   mem_access_t ma;
+  
+  // 设置消息类型为内存访问
+  ma.header.type = MSG_TYPE_MEM_ACCESS;
 
   /* collect memory address information from other threads */
   for (int i = 0; i < 32; i++) {

@@ -40,6 +40,9 @@
 #include <unordered_set>
 #include <vector>
 
+// Add CUDA runtime header
+#include <cuda_runtime.h>
+
 /* every tool needs to include this once */
 #include "nvbit_tool.h"
 
@@ -89,6 +92,7 @@ struct TraceRecord {
   uint64_t pc;
   std::vector<std::vector<uint32_t>> reg_values;  // [reg_idx][thread_idx]
   std::vector<uint32_t> ureg_values;              // [ureg_idx]
+  std::vector<std::vector<uint64_t>> addrs;       // [thread_idx][addr_idx]
 };
 
 /* Structure to identify a warp */
@@ -109,6 +113,12 @@ struct WarpKey {
 
 /* Map to store traces for each warp */
 std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
+
+// Declarations for device functions defined elsewhere
+extern "C" __device__ void record_reg_val(int pred, int opcode_id, uint64_t pchannel_dev, uint64_t pc, int32_t num_regs,
+                                          int32_t num_uregs, ...);
+extern "C" __device__ void instrument_mem(int pred, int opcode_id, uint64_t addr, uint64_t grid_launch_id,
+                                          uint64_t pchannel_dev);
 
 // Add timeout configuration (in seconds)
 int deadlock_timeout = 10;  // Default 10 seconds, can be configured via environment variable
@@ -256,6 +266,8 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
       int opcode_id = sass_to_id_map[instr->getSass()];
       std::vector<int> reg_num_list;
       std::vector<int> ureg_num_list;
+      int mref_idx = 0;
+
       /* iterate on the operands */
       for (int i = 0; i < instr->getNumOperands(); i++) {
         /* get the operand "i" */
@@ -274,6 +286,22 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
             ureg_num_list.push_back(op->u.mref.desc_ureg_num);
             ureg_num_list.push_back(op->u.mref.desc_ureg_num + 1);
           }
+          /* insert call to the instrumentation function with its
+           * arguments */
+          nvbit_insert_call(instr, "instrument_mem", IPOINT_BEFORE);
+          /* predicate value */
+          nvbit_add_call_arg_guard_pred_val(instr);
+          /* opcode id */
+          nvbit_add_call_arg_const_val32(instr, opcode_id);
+          /* memory reference 64 bit address */
+          nvbit_add_call_arg_mref_addr64(instr, mref_idx);
+          /* add "space" for kernel function pointer that will be set
+           * at launch time (64 bit value at offset 0 of the dynamic
+           * arguments)*/
+          nvbit_add_call_arg_launch_val64(instr, 0);
+          /* add pointer to channel_dev*/
+          nvbit_add_call_arg_const_val64(instr, (uint64_t)&channel_dev);
+          mref_idx++;
         }
       }
       /* insert call to the instrumentation function with its
@@ -307,6 +335,7 @@ __global__ void flush_channel() {
   /* push memory access with negative cta id to communicate the kernel is
    * completed */
   reg_info_t ri;
+  ri.header.type = MSG_TYPE_REG_INFO;  // Set message type
   ri.cta_id_x = -1;
   ri.pc = 0;  // Set PC to 0 for completion marker
   channel_dev.push(&ri, sizeof(reg_info_t));
@@ -431,97 +460,154 @@ void *recv_thread_fun(void *) {
 
       uint32_t num_processed_bytes = 0;
       while (num_processed_bytes < num_recv_bytes) {
-        reg_info_t *ri = (reg_info_t *)&recv_buffer[num_processed_bytes];
+        // First read the message header to determine the message type
+        message_header_t *header = (message_header_t *)&recv_buffer[num_processed_bytes];
+        printf("Received message type: %d\n", header->type);
+        // Process message based on its type
+        if (header->type == MSG_TYPE_REG_INFO) {
+          // Process register info message
+          reg_info_t *ri = (reg_info_t *)&recv_buffer[num_processed_bytes];
 
-        /* when we get this cta_id_x it means the kernel has completed
-         */
-        if (ri->cta_id_x == -1) {
-          // Kernel completed, dump the currently collected traces
-          dump_trace_logs(warp_traces, false, current_kernel_name);
-          // Clear traces to prepare for the next kernel
-          warp_traces.clear();
-          // Reset the dump timeout when a new kernel starts
-          dump_start_time = time(0);
-          dump_timeout_reached = false;
-          break;
-        }
-
-        // Create key for this warp
-        WarpKey key;
-        key.cta_id_x = ri->cta_id_x;
-        key.cta_id_y = ri->cta_id_y;
-        key.cta_id_z = ri->cta_id_z;
-        key.warp_id = ri->warp_id;
-
-        // Create trace record
-        TraceRecord trace;
-        trace.opcode_id = ri->opcode_id;
-        trace.pc = ri->pc;
-
-        // Store register values
-        trace.reg_values.resize(ri->num_regs);
-        for (int reg_idx = 0; reg_idx < ri->num_regs; reg_idx++) {
-          trace.reg_values[reg_idx].resize(32);
-          for (int i = 0; i < 32; i++) {
-            trace.reg_values[reg_idx][i] = ri->reg_vals[i][reg_idx];
+          /* when we get this cta_id_x it means the kernel has completed */
+          if (ri->cta_id_x == -1) {
+            // Kernel completed, dump the currently collected traces
+            dump_trace_logs(warp_traces, false, current_kernel_name);
+            // Clear traces to prepare for the next kernel
+            warp_traces.clear();
+            // Reset the dump timeout when a new kernel starts
+            dump_start_time = time(0);
+            dump_timeout_reached = false;
+            break;
           }
-        }
-        // Store unified register values
-        trace.ureg_values.resize(ri->num_uregs);
-        for (int i = 0; i < ri->num_uregs; i++) {
-          trace.ureg_values[i] = ri->ureg_vals[i];
-        }
 
-        // Add trace to the warp's trace vector
-        if (store_last_traces_only) {
-          // If we're only keeping the last trace in memory, clear any existing traces
-          // and just add this one
-          if (warp_traces.find(key) != warp_traces.end()) {
-            warp_traces[key].clear();  // Clear existing traces
-          }
-          warp_traces[key].push_back(trace);  // Add the new trace
-        } else {
-          // Normal mode: keep all traces in memory
-          warp_traces[key].push_back(trace);
-        }
+          // Create key for this warp
+          WarpKey key;
+          key.cta_id_x = ri->cta_id_x;
+          key.cta_id_y = ri->cta_id_y;
+          key.cta_id_z = ri->cta_id_z;
+          key.warp_id = ri->warp_id;
 
-        // Check if we should dump intermediate trace
-        if (dump_intermedia_trace && !dump_timeout_reached) {
-          // Check if dump timeout has been reached
-          if (dump_intermedia_trace_timeout > 0) {
-            current_time = time(0);
-            if (difftime(current_time, dump_start_time) > dump_intermedia_trace_timeout) {
-              if (!dump_timeout_reached) {
-                printf("\n!!! INTERMEDIATE TRACE DUMPING STOPPED: Timeout of %d seconds reached !!!\n\n",
-                       dump_intermedia_trace_timeout);
-                dump_timeout_reached = true;
-              }
+          // Create trace record
+          TraceRecord trace;
+          trace.opcode_id = ri->opcode_id;
+          trace.pc = ri->pc;
+
+          // Store register values
+          trace.reg_values.resize(ri->num_regs);
+          for (int reg_idx = 0; reg_idx < ri->num_regs; reg_idx++) {
+            trace.reg_values[reg_idx].resize(32);
+            for (int i = 0; i < 32; i++) {
+              trace.reg_values[reg_idx][i] = ri->reg_vals[i][reg_idx];
             }
           }
 
-          // Only dump if timeout not reached
-          if (!dump_timeout_reached) {
-            printf("INTERMEDIATE TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
-                   key.warp_id);
-            // To match with the PC offset in ncu reports
-            printf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[trace.opcode_id].c_str(), (trace.pc / 16) + 1,
-                   trace.pc);
+          // Store unified register values
+          trace.ureg_values.resize(ri->num_uregs);
+          for (int i = 0; i < ri->num_uregs; i++) {
+            trace.ureg_values[i] = ri->ureg_vals[i];
+          }
 
-            for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++) {
-              printf("  * ");
-              for (int i = 0; i < 32; i++) {
-                printf("Reg%zu_T%d: 0x%08x ", reg_idx, i, trace.reg_values[reg_idx][i]);
+          // Add trace to the warp's trace vector
+          if (store_last_traces_only) {
+            // If we're only keeping the last trace in memory, clear any existing traces
+            // and just add this one
+            if (warp_traces.find(key) != warp_traces.end()) {
+              warp_traces[key].clear();  // Clear existing traces
+            }
+            warp_traces[key].push_back(trace);  // Add the new trace
+          } else {
+            // Normal mode: keep all traces in memory
+            warp_traces[key].push_back(trace);
+          }
+
+          // Check if we should dump intermediate trace for register info
+          if (dump_intermedia_trace && !dump_timeout_reached) {
+            // Check if dump timeout has been reached
+            if (dump_intermedia_trace_timeout > 0) {
+              current_time = time(0);
+              if (difftime(current_time, dump_start_time) > dump_intermedia_trace_timeout) {
+                if (!dump_timeout_reached) {
+                  printf("\n!!! INTERMEDIATE TRACE DUMPING STOPPED: Timeout of %d seconds reached !!!\n\n",
+                         dump_intermedia_trace_timeout);
+                  dump_timeout_reached = true;
+                }
+              }
+            }
+
+            // Only dump if timeout not reached
+            if (!dump_timeout_reached) {
+              printf("INTERMEDIATE REG TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
+                     key.warp_id);
+              // To match with the PC offset in ncu reports
+              printf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[trace.opcode_id].c_str(), (trace.pc / 16) + 1,
+                     trace.pc);
+
+              for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++) {
+                printf("  * ");
+                for (int i = 0; i < 32; i++) {
+                  printf("Reg%zu_T%d: 0x%08x ", reg_idx, i, trace.reg_values[reg_idx][i]);
+                }
+                printf("\n");
+              }
+              for (size_t i = 0; i < trace.ureg_values.size(); i++) {
+                printf("  * UREG%zu: 0x%08x\n", i, trace.ureg_values[i]);
               }
               printf("\n");
             }
-            for (size_t i = 0; i < trace.ureg_values.size(); i++) {
-              printf("  * UREG%zu: 0x%08x\n", i, trace.ureg_values[i]);
-            }
-            printf("\n");
           }
-        }
 
-        num_processed_bytes += sizeof(reg_info_t);
+          num_processed_bytes += sizeof(reg_info_t);
+        } else if (header->type == MSG_TYPE_MEM_ACCESS) {
+          // Process memory access message
+          mem_access_t *mem = (mem_access_t *)&recv_buffer[num_processed_bytes];
+
+          // Create key for this warp
+          WarpKey key;
+          key.cta_id_x = mem->cta_id_x;
+          key.cta_id_y = mem->cta_id_y;
+          key.cta_id_z = mem->cta_id_z;
+          key.warp_id = mem->warp_id;
+
+          // Print memory access information if intermediate trace is enabled
+          if (dump_intermedia_trace && !dump_timeout_reached) {
+            // Check if dump timeout has been reached (same code as for reg_info)
+            if (dump_intermedia_trace_timeout > 0) {
+              current_time = time(0);
+              if (difftime(current_time, dump_start_time) > dump_intermedia_trace_timeout) {
+                if (!dump_timeout_reached) {
+                  printf("\n!!! INTERMEDIATE TRACE DUMPING STOPPED: Timeout of %d seconds reached !!!\n\n",
+                         dump_intermedia_trace_timeout);
+                  dump_timeout_reached = true;
+                }
+              }
+            }
+
+            // Only dump if timeout not reached
+            if (!dump_timeout_reached) {
+              printf("INTERMEDIATE MEM TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
+                     key.warp_id);
+              printf("  %s - Grid Launch ID: %lu\n", id_to_sass_map[mem->opcode_id].c_str(), mem->grid_launch_id);
+
+              // Print memory addresses
+              printf("  Memory Addresses:\n");
+              for (int i = 0; i < 32; i++) {
+                if (mem->addrs[i] != 0) {  // Only print non-zero addresses
+                  printf("  * Thread %d: 0x%016lx\n", i, mem->addrs[i]);
+                }
+              }
+              printf("\n");
+            }
+          }
+
+          // Here you could add code to store memory access information in a data structure
+          // similar to how register traces are stored
+
+          num_processed_bytes += sizeof(mem_access_t);
+        } else {
+          // Unknown message type, skip minimum amount of bytes
+          printf("ERROR: Unknown message type %d received\n", header->type);
+          num_processed_bytes += sizeof(message_header_t);
+        }
       }
     } else {
       // If no data received, sleep for a short time to avoid busy waiting
