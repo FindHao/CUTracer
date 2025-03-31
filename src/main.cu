@@ -86,7 +86,7 @@ int verbose = 0;
 std::map<std::string, int> sass_to_id_map;
 std::map<int, std::string> id_to_sass_map;
 
-/* grid launch id, incremented at every launch */
+/* Yueming: will fix this part later. grid launch id, incremented at every launch */
 uint64_t global_grid_launch_id = 0;
 
 /* Structure to represent a single trace record */
@@ -769,7 +769,6 @@ void *recv_thread_fun(void *) {
                      key.warp_id);
               printf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[mem->opcode_id].c_str(), (mem->pc / 16) + 1,
                      mem->pc);
-              printf("  %s - Grid Launch ID: %lu\n", id_to_sass_map[mem->opcode_id].c_str(), mem->grid_launch_id);
 
               // Print memory addresses
               printf("  Memory Addresses:\n  * ");
