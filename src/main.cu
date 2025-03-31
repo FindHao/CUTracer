@@ -292,10 +292,8 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
           nvbit_add_call_arg_const_val32(instr, opcode_id);
           /* memory reference 64 bit address */
           nvbit_add_call_arg_mref_addr64(instr, mref_idx);
-          /* add "space" for kernel function pointer that will be set
-           * at launch time (64 bit value at offset 0 of the dynamic
-           * arguments)*/
-          nvbit_add_call_arg_launch_val64(instr, 0);
+          /* add instruction PC */
+          nvbit_add_call_arg_const_val64(instr, instr->getOffset());
           /* add pointer to channel_dev*/
           nvbit_add_call_arg_const_val64(instr, (uint64_t)&channel_dev);
           mref_idx++;
@@ -646,7 +644,7 @@ void *recv_thread_fun(void *) {
       while (num_processed_bytes < num_recv_bytes) {
         // First read the message header to determine the message type
         message_header_t *header = (message_header_t *)&recv_buffer[num_processed_bytes];
-        printf("Received message type: %d\n", header->type);
+        // printf("Received message type: %d\n", header->type);
         // Process message based on its type
         if (header->type == MSG_TYPE_REG_INFO) {
           // Process register info message
@@ -769,16 +767,24 @@ void *recv_thread_fun(void *) {
             if (!dump_timeout_reached) {
               printf("INTERMEDIATE MEM TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                      key.warp_id);
+              printf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[mem->opcode_id].c_str(), (mem->pc / 16) + 1,
+                     mem->pc);
               printf("  %s - Grid Launch ID: %lu\n", id_to_sass_map[mem->opcode_id].c_str(), mem->grid_launch_id);
 
               // Print memory addresses
-              printf("  Memory Addresses:\n");
+              printf("  Memory Addresses:\n  * ");
+              int printed = 0;
               for (int i = 0; i < 32; i++) {
                 if (mem->addrs[i] != 0) {  // Only print non-zero addresses
-                  printf("  * Thread %d: 0x%016lx\n", i, mem->addrs[i]);
+                  printf("T%d: 0x%016lx ", i, mem->addrs[i]);
+                  printed++;
+                  // Add a newline every 4 addresses for readability
+                  if (printed % 4 == 0 && i < 31) {
+                    printf("\n    ");
+                  }
                 }
               }
-              printf("\n");
+              printf("\n\n");
             }
           }
 
@@ -828,8 +834,7 @@ void nvbit_at_ctx_term(CUcontext ctx) {
   /* Notify receiver thread and wait for receiver thread to
    * notify back */
   recv_thread_done = RecvThreadState::STOP;
-  while (recv_thread_done != RecvThreadState::FINISHED)
-    ;
+  while (recv_thread_done != RecvThreadState::FINISHED);
   channel_host.destroy(false);
   skip_callback_flag = false;
 }

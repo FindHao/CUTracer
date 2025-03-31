@@ -65,6 +65,7 @@ typedef struct {
   int cta_id_x;
   int cta_id_y;
   int cta_id_z;
+  uint64_t pc;
   int warp_id;
   int opcode_id;
   uint64_t addrs[32];

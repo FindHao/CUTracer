@@ -28,7 +28,7 @@ __global__ void vecAdd(double *a, double *b, double *c, int n) {
 
 int main(int argc, char *argv[]) {
     // Size of vectors
-    int n = 1;
+    int n = 1024;
     if (argc > 1) n = atoi(argv[1]);
 
     // Host input vectors
@@ -72,7 +72,7 @@ int main(int argc, char *argv[]) {
     int blockSize, gridSize;
 
     // Number of threads in each thread block
-    blockSize = 32;
+    blockSize = 128;
 
     // Number of thread blocks in grid
     gridSize = (int)ceil((float)n / blockSize);
