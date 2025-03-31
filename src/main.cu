@@ -86,6 +86,9 @@ int verbose = 0;
 std::map<std::string, int> sass_to_id_map;
 std::map<int, std::string> id_to_sass_map;
 
+/* grid launch id, incremented at every launch */
+uint64_t global_grid_launch_id = 0;
+
 /* Structure to represent a single trace record */
 struct TraceRecord {
   int opcode_id;
@@ -114,12 +117,6 @@ struct WarpKey {
 /* Map to store traces for each warp */
 std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
 
-// Declarations for device functions defined elsewhere
-extern "C" __device__ void record_reg_val(int pred, int opcode_id, uint64_t pchannel_dev, uint64_t pc, int32_t num_regs,
-                                          int32_t num_uregs, ...);
-extern "C" __device__ void instrument_mem(int pred, int opcode_id, uint64_t addr, uint64_t grid_launch_id,
-                                          uint64_t pchannel_dev);
-
 // Add timeout configuration (in seconds)
 int deadlock_timeout = 10;  // Default 10 seconds, can be configured via environment variable
 
@@ -132,14 +129,14 @@ int dump_intermedia_trace = 0;          // Default: don't dump intermediate trac
 int dump_intermedia_trace_timeout = 0;  // Default: no timeout (0 means unlimited)
 
 /* Store the name of the currently executing kernel */
-char *current_kernel_name = NULL;
+std::string current_kernel_name;
 
 // Add a variable to store function name patterns to instrument
 std::vector<std::string> function_patterns;
 
 // Function to handle logging of trace data
 void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, bool timeout_occurred,
-                     const char *kernel_name = nullptr);
+                     const char *kernel_name);
 
 void nvbit_at_init() {
   setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
@@ -331,17 +328,101 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
   }
 }
 
-__global__ void flush_channel() {
+/* flush channel */
+__global__ void flush_channel(ChannelDev *ch_dev = NULL) {
+  // Get the channel to use
+  ChannelDev *channel = (ch_dev == NULL) ? &channel_dev : ch_dev;
+
   /* push memory access with negative cta id to communicate the kernel is
    * completed */
   reg_info_t ri;
   ri.header.type = MSG_TYPE_REG_INFO;  // Set message type
   ri.cta_id_x = -1;
   ri.pc = 0;  // Set PC to 0 for completion marker
-  channel_dev.push(&ri, sizeof(reg_info_t));
+  channel->push(&ri, sizeof(reg_info_t));
 
   /* flush channel */
-  channel_dev.flush();
+  channel->flush();
+}
+
+// Added function to handle pre-kernel launch work
+static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_launch_id, nvbit_api_cuda_t cbid,
+                                void *params, bool stream_capture = false, bool build_graph = false) {
+  // If not stream capturing or graph building, ensure GPU is idle
+  if (!stream_capture && !build_graph) {
+    /* Make sure GPU is idle */
+    cudaDeviceSynchronize();
+    assert(cudaGetLastError() == cudaSuccess);
+  }
+
+  instrument_function_if_needed(ctx, func);
+
+  int nregs = 0;
+  CUDA_SAFECALL(cuFuncGetAttribute(&nregs, CU_FUNC_ATTRIBUTE_NUM_REGS, func));
+
+  int shmem_static_nbytes = 0;
+  CUDA_SAFECALL(cuFuncGetAttribute(&shmem_static_nbytes, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, func));
+
+  /* get function name and pc */
+  const char *func_name = nvbit_get_func_name(ctx, func);
+  uint64_t pc = nvbit_get_func_addr(ctx, func);
+
+  // During stream capture or graph building, the kernel doesn't actually launch, so don't set launch parameters
+  if (!stream_capture && !build_graph) {
+    /* set grid launch id at launch time */
+    CUstream stream = 0;
+
+    // Get the current kernel's stream
+    if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
+      cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
+      stream = p->config->hStream;
+    } else if (cbid == API_CUDA_cuLaunchKernel_ptsz || cbid == API_CUDA_cuLaunchKernel ||
+               cbid == API_CUDA_cuLaunchCooperativeKernel_ptsz || cbid == API_CUDA_cuLaunchCooperativeKernel) {
+      cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
+      stream = p->hStream;
+    } else if (cbid == API_CUDA_cuLaunchGridAsync) {
+      cuLaunchGridAsync_params *p = (cuLaunchGridAsync_params *)params;
+      stream = p->hStream;
+    }
+
+    nvbit_set_at_launch(ctx, func, (uint64_t)grid_launch_id, stream);
+
+    if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
+      cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
+      printf(
+          "Kernel %s - PC 0x%lx - grid launch id %ld - grid size %d,%d,%d - block size %d,%d,%d - nregs "
+          "%d - shmem %d - cuda stream id %ld\n",
+          func_name, pc, grid_launch_id, p->config->gridDimX, p->config->gridDimY, p->config->gridDimZ,
+          p->config->blockDimX, p->config->blockDimY, p->config->blockDimZ, nregs,
+          shmem_static_nbytes + p->config->sharedMemBytes, (uint64_t)p->config->hStream);
+    } else {
+      cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
+      printf(
+          "Kernel %s - PC 0x%lx - grid launch id %ld - grid size %d,%d,%d - block size %d,%d,%d - nregs "
+          "%d - shmem %d - cuda stream id %ld\n",
+          func_name, pc, grid_launch_id, p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
+          p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes, (uint64_t)p->hStream);
+    }
+
+    // Increment the grid launch ID for the next launch
+    grid_launch_id++;
+  }
+
+  /* enable instrumented code to run */
+  nvbit_enable_instrumented(ctx, func, true);
+}
+
+// Added function to handle post-kernel launch work
+static void leave_kernel_launch() {
+  // Ensure user kernel completion to avoid deadlocks
+  cudaDeviceSynchronize();
+  /* issue flush of channel so we are sure all the memory accesses
+   * have been pushed */
+  flush_channel<<<1, 1>>>(&channel_dev);
+
+  /* Make sure GPU is idle */
+  cudaDeviceSynchronize();
+  assert(cudaGetLastError() == cudaSuccess);
 }
 
 void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, const char *name, void *params,
@@ -356,78 +437,181 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
   }
   skip_callback_flag = true;
 
-  /* Identify all the possible CUDA launch events */
-  if (cbid == API_CUDA_cuLaunch || cbid == API_CUDA_cuLaunchKernel_ptsz || cbid == API_CUDA_cuLaunchGrid ||
-      cbid == API_CUDA_cuLaunchGridAsync || cbid == API_CUDA_cuLaunchKernel || cbid == API_CUDA_cuLaunchKernelEx ||
-      cbid == API_CUDA_cuLaunchKernelEx_ptsz) {
-    /* cast params to launch parameter based on cbid since if we are here
-     * we know these are the right parameters types */
-    CUfunction func;
-    if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
-      cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
-      func = p->f;
-    } else {
-      cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
-      func = p->f;
-    }
-
-    if (!is_exit) {
-      /* Make sure GPU is idle */
-      cudaDeviceSynchronize();
-      assert(cudaGetLastError() == cudaSuccess);
-
-      int nregs = 0;
-      CUDA_SAFECALL(cuFuncGetAttribute(&nregs, CU_FUNC_ATTRIBUTE_NUM_REGS, func));
-
-      int shmem_static_nbytes = 0;
-      CUDA_SAFECALL(cuFuncGetAttribute(&shmem_static_nbytes, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, func));
-
-      instrument_function_if_needed(ctx, func);
-
-      nvbit_enable_instrumented(ctx, func, true);
-
-      // Get kernel name for use in logs
-      const char *kernel_name = nvbit_get_func_name(ctx, func);
+  switch (cbid) {
+    // Handle CUDA launch events without stream parameters, they won't involve CUDA graphs
+    case API_CUDA_cuLaunch:
+    case API_CUDA_cuLaunchGrid: {
+      cuLaunch_params *p = (cuLaunch_params *)params;
+      CUfunction func = p->f;
+      if (!is_exit) {
+        enter_kernel_launch(ctx, func, global_grid_launch_id, cbid, params);
+      } else {
+        leave_kernel_launch();
+      }
+    } break;
+    // Handle kernel launches with stream parameters, which can be used for CUDA graphs
+    case API_CUDA_cuLaunchKernel_ptsz:
+    case API_CUDA_cuLaunchKernel:
+    case API_CUDA_cuLaunchCooperativeKernel:
+    case API_CUDA_cuLaunchCooperativeKernel_ptsz:
+    case API_CUDA_cuLaunchKernelEx:
+    case API_CUDA_cuLaunchKernelEx_ptsz:
+    case API_CUDA_cuLaunchGridAsync: {
+      CUfunction func;
+      CUstream hStream;
 
       if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
         cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
-        printf(
-            "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
-            "%d - shmem %d - cuda stream id %ld\n",
-            kernel_name, nvbit_get_func_addr(ctx, func), p->config->gridDimX, p->config->gridDimY, p->config->gridDimZ,
-            p->config->blockDimX, p->config->blockDimY, p->config->blockDimZ, nregs,
-            shmem_static_nbytes + p->config->sharedMemBytes, (uint64_t)p->config->hStream);
-      } else {
+        func = p->f;
+        hStream = p->config->hStream;
+      } else if (cbid == API_CUDA_cuLaunchKernel_ptsz || cbid == API_CUDA_cuLaunchKernel ||
+                 cbid == API_CUDA_cuLaunchCooperativeKernel_ptsz || cbid == API_CUDA_cuLaunchCooperativeKernel) {
         cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
-        printf(
-            "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
-            "%d - shmem %d - cuda stream id %ld\n",
-            kernel_name, nvbit_get_func_addr(ctx, func), p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX,
-            p->blockDimY, p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes, (uint64_t)p->hStream);
+        func = p->f;
+        hStream = p->hStream;
+      } else {
+        cuLaunchGridAsync_params *p = (cuLaunchGridAsync_params *)params;
+        func = p->f;
+        hStream = p->hStream;
       }
 
-      // Store current kernel name for use when kernel completes
-      if (current_kernel_name) {
-        free(current_kernel_name);
+      cudaStreamCaptureStatus streamStatus;
+      /* Check if the stream is currently capturing */
+      CUDA_SAFECALL(cudaStreamIsCapturing(hStream, &streamStatus));
+      if (!is_exit) {
+        bool stream_capture = (streamStatus == cudaStreamCaptureStatusActive);
+        enter_kernel_launch(ctx, func, global_grid_launch_id, cbid, params, stream_capture);
+      } else {
+        if (streamStatus != cudaStreamCaptureStatusActive) {
+          if (verbose >= 1) {
+            printf("kernel %s not captured by cuda graph\n", nvbit_get_func_name(ctx, func));
+          }
+          leave_kernel_launch();
+        } else {
+          if (verbose >= 1) {
+            printf("kernel %s captured by cuda graph\n", nvbit_get_func_name(ctx, func));
+          }
+        }
       }
-      current_kernel_name = strdup(kernel_name);
-    } else {
-      /* make sure current kernel is completed */
-      cudaDeviceSynchronize();
-      cudaError_t kernelError = cudaGetLastError();
-      if (kernelError != cudaSuccess) {
-        printf("Kernel launch error: %s\n", cudaGetErrorString(kernelError));
-        assert(0);
-      }
+    } break;
+    // Support for CUDA graph node additions
+    case API_CUDA_cuGraphAddKernelNode: {
+      cuGraphAddKernelNode_params *p = (cuGraphAddKernelNode_params *)params;
+      CUfunction func = p->nodeParams->func;
 
-      /* issue flush of channel so we are sure all the memory accesses
-       * have been pushed */
-      flush_channel<<<1, 1>>>();
-      cudaDeviceSynchronize();
-      assert(cudaGetLastError() == cudaSuccess);
-    }
+      if (!is_exit) {
+        // nodeParams and cuLaunchKernel_params are identical up to sharedMemBytes
+        enter_kernel_launch(ctx, func, global_grid_launch_id, cbid, (void *)p->nodeParams, false, true);
+      }
+    } break;
+    // Support for CUDA graph launches
+    case API_CUDA_cuGraphLaunch: {
+      // If we're exiting a CUDA graph launch, wait for the graph to complete
+      if (is_exit) {
+        cuGraphLaunch_params *p = (cuGraphLaunch_params *)params;
+
+        CUDA_SAFECALL(cudaStreamSynchronize(p->hStream));
+        assert(cudaGetLastError() == cudaSuccess);
+        /* push a flush channel kernel */
+        flush_channel<<<1, 1, 0, p->hStream>>>();
+        CUDA_SAFECALL(cudaStreamSynchronize(p->hStream));
+        assert(cudaGetLastError() == cudaSuccess);
+      }
+    } break;
+    default:
+      // Handle original CUDA launch events
+      if (cbid == API_CUDA_cuLaunch || cbid == API_CUDA_cuLaunchKernel_ptsz || cbid == API_CUDA_cuLaunchGrid ||
+          cbid == API_CUDA_cuLaunchGridAsync || cbid == API_CUDA_cuLaunchKernel || cbid == API_CUDA_cuLaunchKernelEx ||
+          cbid == API_CUDA_cuLaunchKernelEx_ptsz) {
+        /* cast params to launch parameter based on cbid since if we are here
+         * we know these are the right parameters types */
+        CUfunction func;
+        if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
+          cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
+          func = p->f;
+        } else {
+          cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
+          func = p->f;
+        }
+
+        if (!is_exit) {
+          /* Make sure GPU is idle */
+          cudaDeviceSynchronize();
+          assert(cudaGetLastError() == cudaSuccess);
+
+          int nregs = 0;
+          CUDA_SAFECALL(cuFuncGetAttribute(&nregs, CU_FUNC_ATTRIBUTE_NUM_REGS, func));
+
+          int shmem_static_nbytes = 0;
+          CUDA_SAFECALL(cuFuncGetAttribute(&shmem_static_nbytes, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, func));
+
+          instrument_function_if_needed(ctx, func);
+
+          nvbit_enable_instrumented(ctx, func, true);
+
+          // Get kernel name for use in logs
+          const char *kernel_name = nvbit_get_func_name(ctx, func);
+
+          if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
+            cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
+            printf(
+                "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
+                "%d - shmem %d - cuda stream id %ld\n",
+                kernel_name, nvbit_get_func_addr(ctx, func), p->config->gridDimX, p->config->gridDimY,
+                p->config->gridDimZ, p->config->blockDimX, p->config->blockDimY, p->config->blockDimZ, nregs,
+                shmem_static_nbytes + p->config->sharedMemBytes, (uint64_t)p->config->hStream);
+          } else {
+            cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
+            printf(
+                "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
+                "%d - shmem %d - cuda stream id %ld\n",
+                kernel_name, nvbit_get_func_addr(ctx, func), p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX,
+                p->blockDimY, p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes, (uint64_t)p->hStream);
+          }
+
+          // Store current kernel name for use when kernel completes
+          current_kernel_name = kernel_name;
+        } else {
+          /* make sure current kernel is completed */
+          cudaDeviceSynchronize();
+          cudaError_t kernelError = cudaGetLastError();
+          if (kernelError != cudaSuccess) {
+            printf("Kernel launch error: %s\n", cudaGetErrorString(kernelError));
+            assert(0);
+          }
+
+          /* issue flush of channel so we are sure all the memory accesses
+           * have been pushed */
+          flush_channel<<<1, 1>>>();
+          cudaDeviceSynchronize();
+          assert(cudaGetLastError() == cudaSuccess);
+        }
+      }
+      break;
   }
   skip_callback_flag = false;
+  pthread_mutex_unlock(&cuda_event_mutex);
+}
+
+// Add support for CUDA graph node launches
+void nvbit_at_graph_node_launch(CUcontext ctx, CUfunction func, CUstream stream, uint64_t launch_handle) {
+  func_config_t config = {0};
+  const char *func_name = nvbit_get_func_name(ctx, func);
+  uint64_t pc = nvbit_get_func_addr(ctx, func);
+
+  pthread_mutex_lock(&cuda_event_mutex);
+  nvbit_set_at_launch(ctx, func, (uint64_t)global_grid_launch_id, stream, launch_handle);
+  nvbit_get_func_config(ctx, func, &config);
+
+  printf(
+      "Graph Node Launch - Kernel %s - PC 0x%lx - grid launch id %ld - grid size %d,%d,%d "
+      "- block size %d,%d,%d - nregs %d - shmem %d - cuda stream id %ld\n",
+      func_name, pc, global_grid_launch_id, config.gridDimX, config.gridDimY, config.gridDimZ, config.blockDimX,
+      config.blockDimY, config.blockDimZ, config.num_registers,
+      config.shmem_static_nbytes + config.shmem_dynamic_nbytes, (uint64_t)stream);
+
+  // Increment the grid launch ID for the next launch
+  global_grid_launch_id++;
   pthread_mutex_unlock(&cuda_event_mutex);
 }
 
@@ -471,7 +655,7 @@ void *recv_thread_fun(void *) {
           /* when we get this cta_id_x it means the kernel has completed */
           if (ri->cta_id_x == -1) {
             // Kernel completed, dump the currently collected traces
-            dump_trace_logs(warp_traces, false, current_kernel_name);
+            dump_trace_logs(warp_traces, false, current_kernel_name.c_str());
             // Clear traces to prepare for the next kernel
             warp_traces.clear();
             // Reset the dump timeout when a new kernel starts
@@ -570,7 +754,6 @@ void *recv_thread_fun(void *) {
 
           // Print memory access information if intermediate trace is enabled
           if (dump_intermedia_trace && !dump_timeout_reached) {
-            // Check if dump timeout has been reached (same code as for reg_info)
             if (dump_intermedia_trace_timeout > 0) {
               current_time = time(0);
               if (difftime(current_time, dump_start_time) > dump_intermedia_trace_timeout) {
@@ -617,7 +800,7 @@ void *recv_thread_fun(void *) {
 
   // If timeout occurred, dump the currently collected traces
   if (timeout_occurred) {
-    dump_trace_logs(warp_traces, true, current_kernel_name);
+    dump_trace_logs(warp_traces, true, current_kernel_name.c_str());
   }
 
   // Clear the map after printing
@@ -653,7 +836,7 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 
 // Add a function to handle logging
 void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, bool timeout_occurred,
-                     const char *kernel_name) {
+                     const char *kernel_name = nullptr) {
   // Only create log files if logging is enabled
   if (!enable_logging) {
     // If logging is disabled but a timeout occurred, still print a warning to stdout

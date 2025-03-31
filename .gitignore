@@ -64,3 +64,5 @@ nvbit_release/
 
 *.log
 third_party/nvbit
+
+tests/vectoradd/vectoradd
