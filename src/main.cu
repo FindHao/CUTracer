@@ -134,6 +134,9 @@ std::string current_kernel_name;
 // Add a variable to store function name patterns to instrument
 std::vector<std::string> function_patterns;
 
+// Flag to track if any functions matched the specified patterns
+bool any_function_matched = false;
+
 // Function to handle logging of trace data
 void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, bool timeout_occurred,
                      const char *kernel_name);
@@ -221,6 +224,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
         if ((unmangled_name && strstr(unmangled_name, pattern.c_str()) != NULL) ||
             (mangled_name && strstr(mangled_name, pattern.c_str()) != NULL)) {
           should_instrument = true;
+          any_function_matched = true;  // Mark that at least one function matched
           if (verbose) {
             printf("Found matching function for filter '%s': %s (mangled: %s)\n", pattern.c_str(),
                    unmangled_name ? unmangled_name : "unknown", mangled_name ? mangled_name : "unknown");
@@ -346,6 +350,9 @@ __global__ void flush_channel(ChannelDev *ch_dev = NULL) {
 // Added function to handle pre-kernel launch work
 static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_launch_id, nvbit_api_cuda_t cbid,
                                 void *params, bool stream_capture = false, bool build_graph = false) {
+  // Reset the function match flag for this kernel launch
+  any_function_matched = false;
+  
   // If not stream capturing or graph building, ensure GPU is idle
   if (!stream_capture && !build_graph) {
     /* Make sure GPU is idle */
@@ -364,6 +371,21 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_l
   /* get function name and pc */
   const char *func_name = nvbit_get_func_name(ctx, func);
   uint64_t pc = nvbit_get_func_addr(ctx, func);
+
+  // Only enable instrumentation if:
+  // 1. No function patterns were specified (instrument everything), or
+  // 2. At least one function matched the specified patterns
+  bool should_enable_instrumentation = function_patterns.empty() || any_function_matched;
+  
+  // Print a warning if function patterns were specified but no functions matched
+  if (!function_patterns.empty() && !any_function_matched) {
+    printf("\n!!! WARNING: No functions matched the specified FUNC_NAME_FILTER patterns !!!\n");
+    printf("Specified patterns:\n");
+    for (const auto &pattern : function_patterns) {
+      printf("  - %s\n", pattern.c_str());
+    }
+    printf("Skipping instrumentation for kernel: %s\n\n", func_name);
+  }
 
   // During stream capture or graph building, the kernel doesn't actually launch, so don't set launch parameters
   if (!stream_capture && !build_graph) {
@@ -389,25 +411,27 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_l
       cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
       printf(
           "Kernel %s - PC 0x%lx - grid launch id %ld - grid size %d,%d,%d - block size %d,%d,%d - nregs "
-          "%d - shmem %d - cuda stream id %ld\n",
+          "%d - shmem %d - cuda stream id %ld%s\n",
           func_name, pc, grid_launch_id, p->config->gridDimX, p->config->gridDimY, p->config->gridDimZ,
           p->config->blockDimX, p->config->blockDimY, p->config->blockDimZ, nregs,
-          shmem_static_nbytes + p->config->sharedMemBytes, (uint64_t)p->config->hStream);
+          shmem_static_nbytes + p->config->sharedMemBytes, (uint64_t)p->config->hStream,
+          should_enable_instrumentation ? "" : " (NOT INSTRUMENTED)");
     } else {
       cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
       printf(
           "Kernel %s - PC 0x%lx - grid launch id %ld - grid size %d,%d,%d - block size %d,%d,%d - nregs "
-          "%d - shmem %d - cuda stream id %ld\n",
+          "%d - shmem %d - cuda stream id %ld%s\n",
           func_name, pc, grid_launch_id, p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
-          p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes, (uint64_t)p->hStream);
+          p->blockDimZ, nregs, shmem_static_nbytes + p->sharedMemBytes, (uint64_t)p->hStream,
+          should_enable_instrumentation ? "" : " (NOT INSTRUMENTED)");
     }
 
     // Increment the grid launch ID for the next launch
     grid_launch_id++;
   }
 
-  /* enable instrumented code to run */
-  nvbit_enable_instrumented(ctx, func, true);
+  /* enable instrumented code to run only if we should enable instrumentation */
+  nvbit_enable_instrumented(ctx, func, should_enable_instrumentation);
 }
 
 // Added function to handle post-kernel launch work
@@ -545,7 +569,23 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 
           instrument_function_if_needed(ctx, func);
 
-          nvbit_enable_instrumented(ctx, func, true);
+          // Only enable instrumentation if:
+          // 1. No function patterns were specified (instrument everything), or
+          // 2. At least one function matched the specified patterns
+          bool should_enable_instrumentation = function_patterns.empty() || any_function_matched;
+
+          // Print a warning if function patterns were specified but no functions matched
+          if (!function_patterns.empty() && !any_function_matched) {
+            printf("\n!!! WARNING: No functions matched the specified FUNC_NAME_FILTER patterns !!!\n");
+            printf("Specified patterns:\n");
+            for (const auto &pattern : function_patterns) {
+              printf("  - %s\n", pattern.c_str());
+            }
+            const char *kernel_name = nvbit_get_func_name(ctx, func);
+            printf("Skipping instrumentation for kernel: %s\n\n", kernel_name);
+          }
+
+          nvbit_enable_instrumented(ctx, func, should_enable_instrumentation);
 
           // Get kernel name for use in logs
           const char *kernel_name = nvbit_get_func_name(ctx, func);
