@@ -69,8 +69,9 @@ CUTracer can be configured using environment variables:
 | DUMP_INTERMEDIA_TRACE | 0 | Dump intermediate trace data to stdout (1=enabled, 0=disabled) |
 | DUMP_INTERMEDIA_TRACE_TIMEOUT | 0 | Timeout in seconds for intermediate trace dumping (0=unlimited) |
 | FUNC_NAME_FILTER | - | Comma-separated list of function name patterns to instrument |
-| INSTR_BEGIN | 0 | Beginning of the instruction interval to instrument |
-| INSTR_END | UINT32_MAX | End of the instruction interval to instrument |
+| INSTRS | - | Instruction ranges to instrument, in format: "1-10,13,23-100". Replaces INSTR_BEGIN/INSTR_END |
+| INSTR_BEGIN | 0 | Beginning of the instruction interval to instrument (used if INSTRS is not set) |
+| INSTR_END | UINT32_MAX | End of the instruction interval to instrument (used if INSTRS is not set) |
 | TOOL_VERBOSE | 0 | Enable verbosity inside the tool |
 
 ## Examples
@@ -85,6 +86,16 @@ This will:
 - Set the deadlock detection timeout to 30 seconds
 - Only instrument functions with names containing "kernel_a" or "kernel_b"
 - Run the application with instruction tracing enabled
+
+### Instruction Filtering Example
+
+```bash
+INSTRS="1-10,13,23-100" CUDA_INJECTION64_PATH=./lib/cutracer.so ./my_cuda_app
+```
+
+This will:
+- Instrument only instructions 1 through 10, instruction 13, and instructions 23 through 100
+- Skip all other instructions in the kernels
 
 ### Advanced Example: PyTorch with Flash Attention
 

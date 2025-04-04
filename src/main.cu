@@ -82,6 +82,11 @@ uint32_t instr_begin_interval = 0;
 uint32_t instr_end_interval = UINT32_MAX;
 int verbose = 0;
 
+/* New instruction range filter variables */
+std::string instr_ranges_str = "";  // Raw string for instruction ranges
+std::vector<std::pair<uint32_t, uint32_t>> instr_ranges;  // Parsed instruction ranges
+bool use_instr_ranges = false;  // Flag to indicate if instruction ranges are used
+
 /* opcode to id map and reverse map  */
 std::map<std::string, int> sass_to_id_map;
 std::map<int, std::string> id_to_sass_map;
@@ -143,10 +148,116 @@ void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, 
 
 void nvbit_at_init() {
   setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
-  GET_VAR_INT(instr_begin_interval, "INSTR_BEGIN", 0,
-              "Beginning of the instruction interval where to apply instrumentation");
-  GET_VAR_INT(instr_end_interval, "INSTR_END", UINT32_MAX,
-              "End of the instruction interval where to apply instrumentation");
+  
+  // Get the instruction range filter from environment variable
+  const char* instr_filter = getenv("INSTRS");
+  if (instr_filter) {
+    instr_ranges_str = std::string(instr_filter);
+    use_instr_ranges = true;
+    
+    // Parse the instruction ranges
+    std::string ranges_str = instr_ranges_str;
+    size_t pos = 0;
+    std::string range;
+    
+    // Split by commas
+    while ((pos = ranges_str.find(',')) != std::string::npos) {
+      range = ranges_str.substr(0, pos);
+      ranges_str.erase(0, pos + 1);
+      
+      // Parse individual range (could be single number or range with dash)
+      size_t dash_pos = range.find('-');
+      if (dash_pos != std::string::npos) {
+        // This is a range (e.g., "1-10")
+        try {
+          uint32_t start = std::stoi(range.substr(0, dash_pos));
+          uint32_t end = std::stoi(range.substr(dash_pos + 1));
+          if (start > end) {
+            printf("WARNING: Invalid range %s in INSTRS (start > end). Skipping this range.\n", range.c_str());
+            continue;
+          }
+          instr_ranges.push_back(std::make_pair(start, end));
+        } catch (const std::exception& e) {
+          printf("ERROR: Failed to parse range %s in INSTRS: %s\n", range.c_str(), e.what());
+          continue;
+        }
+      } else {
+        // This is a single number (e.g., "13")
+        try {
+          uint32_t num = std::stoi(range);
+          instr_ranges.push_back(std::make_pair(num, num));
+        } catch (const std::exception& e) {
+          printf("ERROR: Failed to parse instruction number %s in INSTRS: %s\n", range.c_str(), e.what());
+          continue;
+        }
+      }
+    }
+    
+    // Handle the last range (after the last comma or the only range if no commas)
+    if (!ranges_str.empty()) {
+      size_t dash_pos = ranges_str.find('-');
+      if (dash_pos != std::string::npos) {
+        // This is a range (e.g., "1-10")
+        try {
+          uint32_t start = std::stoi(ranges_str.substr(0, dash_pos));
+          uint32_t end = std::stoi(ranges_str.substr(dash_pos + 1));
+          if (start > end) {
+            printf("WARNING: Invalid range %s in INSTRS (start > end). Skipping this range.\n", ranges_str.c_str());
+          } else {
+            instr_ranges.push_back(std::make_pair(start, end));
+          }
+        } catch (const std::exception& e) {
+          printf("ERROR: Failed to parse range %s in INSTRS: %s\n", ranges_str.c_str(), e.what());
+        }
+      } else {
+        // This is a single number (e.g., "13")
+        try {
+          uint32_t num = std::stoi(ranges_str);
+          instr_ranges.push_back(std::make_pair(num, num));
+        } catch (const std::exception& e) {
+          printf("ERROR: Failed to parse instruction number %s in INSTRS: %s\n", ranges_str.c_str(), e.what());
+        }
+      }
+    }
+    
+    // Check if we have any valid ranges
+    if (instr_ranges.empty()) {
+      printf("WARNING: No valid instruction ranges found in INSTRS=\"%s\". No instructions will be instrumented.\n", 
+             instr_filter);
+    }
+    
+    // For backward compatibility: if there's only one number (no dash), set it as instr_begin_interval
+    if (instr_ranges.size() == 1 && instr_ranges[0].first == instr_ranges[0].second) {
+      instr_begin_interval = instr_ranges[0].first;
+      if (verbose) {
+        printf("Setting instruction begin interval to %u (backward compatibility mode)\n", instr_begin_interval);
+      }
+    }
+    
+    if (verbose) {
+      printf("Instruction ranges: ");
+      for (size_t i = 0; i < instr_ranges.size(); i++) {
+        if (instr_ranges[i].first == instr_ranges[i].second) {
+          printf("%u", instr_ranges[i].first);
+        } else {
+          printf("%u-%u", instr_ranges[i].first, instr_ranges[i].second);
+        }
+        if (i < instr_ranges.size() - 1) {
+          printf(", ");
+        }
+      }
+      printf("\n");
+    }
+    
+    printf("Using instruction ranges filter: %s\n", instr_ranges_str.c_str());
+  } else {
+    // If INSTRS is not set, fall back to the old INSTR_BEGIN/INSTR_END behavior
+    GET_VAR_INT(instr_begin_interval, "INSTR_BEGIN", 0,
+                "Beginning of the instruction interval where to apply instrumentation");
+    GET_VAR_INT(instr_end_interval, "INSTR_END", UINT32_MAX,
+                "End of the instruction interval where to apply instrumentation");
+  }
+  
   GET_VAR_INT(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
   GET_VAR_INT(deadlock_timeout, "DEADLOCK_TIMEOUT", 10, "Timeout in seconds to detect potential deadlocks");
   // Add new environment variable controls for logging
@@ -195,6 +306,23 @@ void nvbit_at_init() {
 }
 /* Set used to avoid re-instrumenting the same functions multiple times */
 std::unordered_set<CUfunction> already_instrumented;
+
+/* Helper function to check if an instruction count is within any of the specified ranges */
+bool is_instruction_in_ranges(uint32_t instr_cnt) {
+  if (!use_instr_ranges) {
+    // Use the old interval-based logic
+    return (instr_cnt >= instr_begin_interval && instr_cnt < instr_end_interval);
+  }
+  
+  // Check if the instruction count is in any of the specified ranges
+  for (const auto& range : instr_ranges) {
+    if (instr_cnt >= range.first && instr_cnt <= range.second) {
+      return true;
+    }
+  }
+  
+  return false;
+}
 
 void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
   /* Get related functions of the kernel (device function that can be
@@ -250,11 +378,12 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
     uint32_t cnt = 0;
     /* iterate on all the static instructions in the function */
     for (auto instr : instrs) {
-      if (cnt < instr_begin_interval || cnt >= instr_end_interval) {
+      if (!is_instruction_in_ranges(cnt)) {
         cnt++;
         continue;
       }
       if (verbose) {
+        printf("Instrumenting instruction %u: ", cnt);
         instr->printDecoded();
       }
 
