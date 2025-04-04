@@ -36,10 +36,11 @@ endif
 SRC_DIR := src/
 OBJ_DIR := obj/
 LIB_DIR := lib/
+INCLUDE_DIR := include/
 
 # NVBIT settings
 NVBIT_PATH=./third_party/nvbit/core
-INCLUDES=-I$(NVBIT_PATH) -I./include
+INCLUDES=-I$(NVBIT_PATH) -I./$(INCLUDE_DIR)
 
 # Libraries
 LIBS=-L$(NVBIT_PATH) -lnvbit
