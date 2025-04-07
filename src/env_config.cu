@@ -8,19 +8,21 @@
 #include "env_config.h"
 
 // Define configuration variables
-uint32_t instr_begin_interval = 0;
-uint32_t instr_end_interval = UINT32_MAX;
-int verbose = 0;
+// EVERY VARIABLE MUST BE INITIALIZED IN init_config_from_env()
+uint32_t instr_begin_interval;
+uint32_t instr_end_interval;
+int verbose;
 std::vector<std::pair<uint32_t, uint32_t>> instr_ranges;
 bool use_instr_ranges = false;
 std::string instr_ranges_str = "";
-int deadlock_timeout = 10;
-int enable_logging = 1;
-int log_last_traces_only = 0;
-int log_to_stdout = 0;
-int store_last_traces_only = 0;
-int dump_intermedia_trace = 0;
-int dump_intermedia_trace_timeout = 0;
+int deadlock_timeout;
+int enable_logging;
+int log_last_traces_only;
+int log_to_stdout;
+int store_last_traces_only;
+int dump_intermedia_trace;
+int dump_intermedia_trace_timeout;
+int log_to_stdout_intermediate;
 
 // Function name filters
 std::vector<std::string> function_patterns;
@@ -234,6 +236,8 @@ void init_config_from_env() {
               "Dump intermediate trace data to stdout (1=enabled, 0=disabled)");
   get_var_int(dump_intermedia_trace_timeout, "DUMP_INTERMEDIA_TRACE_TIMEOUT", 0,
               "Timeout in seconds for intermediate trace dumping (0=unlimited)");
+  get_var_int(log_to_stdout_intermediate, "LOG_TO_STDOUT_INTERMEDIATE", 1,
+              "Log intermediate trace data to stdout instead of a file (1=enabled, 0=disabled)");
 
   // Get function name filter
   const char *patterns_env = getenv("FUNC_NAME_FILTER");

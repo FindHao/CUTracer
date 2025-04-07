@@ -118,6 +118,15 @@ std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
 /* Store the name of the currently executing kernel */
 std::string current_kernel_name;
 
+/* File handle for intermediate trace output */
+FILE *intermediate_trace_file = NULL;
+
+/**
+ * Creates the intermediate trace file if needed
+ */
+void create_intermediate_file();
+
+
 // Function to handle logging of trace data
 void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, bool timeout_occurred,
                      const char *kernel_name);
@@ -125,9 +134,13 @@ void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, 
 void nvbit_at_init() {
   // Initialize configuration from environment variables
   init_config_from_env();
+  // Create intermediate trace file if needed
+  create_intermediate_file();
 }
 /* Set used to avoid re-instrumenting the same functions multiple times */
 std::unordered_set<CUfunction> already_instrumented;
+
+
 
 void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
   /* Get related functions of the kernel (device function that can be
@@ -159,14 +172,14 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
           should_instrument = true;
           any_function_matched = true;  // Mark that at least one function matched
           if (verbose) {
-            printf("Found matching function for filter '%s': %s (mangled: %s)\n", pattern.c_str(),
+            fprintf(intermediate_trace_file, "Found matching function for filter '%s': %s (mangled: %s)\n", pattern.c_str(),
                    unmangled_name ? unmangled_name : "unknown", mangled_name ? mangled_name : "unknown");
           }
           break;
         }
       }
     } else if (verbose) {
-      printf("Instrumenting function: %s (mangled: %s)\n", unmangled_name ? unmangled_name : "unknown",
+      fprintf(intermediate_trace_file, "Instrumenting function: %s (mangled: %s)\n", unmangled_name ? unmangled_name : "unknown",
              mangled_name ? mangled_name : "unknown");
     }
 
@@ -177,7 +190,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 
     const std::vector<Instr *> &instrs = nvbit_get_instrs(ctx, f);
     if (verbose) {
-      printf("Inspecting function %s at address 0x%lx\n", nvbit_get_func_name(ctx, f), nvbit_get_func_addr(ctx, f));
+      fprintf(intermediate_trace_file, "Inspecting function %s at address 0x%lx\n", nvbit_get_func_name(ctx, f), nvbit_get_func_addr(ctx, f));
     }
 
     uint32_t cnt = 0;
@@ -188,7 +201,7 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
         continue;
       }
       if (verbose) {
-        printf("Instrumenting instruction %u: ", cnt);
+        fprintf(intermediate_trace_file, "Instrumenting instruction %u: ", cnt);
         instr->printDecoded();
       }
 
@@ -313,12 +326,12 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_l
   
   // Print a warning if function patterns were specified but no functions matched
   if (!function_patterns.empty() && !any_function_matched) {
-    printf("\n!!! WARNING: No functions matched the specified FUNC_NAME_FILTER patterns !!!\n");
-    printf("Specified patterns:\n");
+    fprintf(intermediate_trace_file, "\n!!! WARNING: No functions matched the specified FUNC_NAME_FILTER patterns !!!\n");
+    fprintf(intermediate_trace_file, "Specified patterns:\n");
     for (const auto &pattern : function_patterns) {
-      printf("  - %s\n", pattern.c_str());
+      fprintf(intermediate_trace_file, "  - %s\n", pattern.c_str());
     }
-    printf("Skipping instrumentation for kernel: %s\n\n", func_name);
+    fprintf(intermediate_trace_file, "Skipping instrumentation for kernel: %s\n\n", func_name);
   }
 
   // During stream capture or graph building, the kernel doesn't actually launch, so don't set launch parameters
@@ -343,7 +356,7 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_l
 
     if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
       cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
-      printf(
+      fprintf(intermediate_trace_file,
           "Kernel %s - PC 0x%lx - grid launch id %ld - grid size %d,%d,%d - block size %d,%d,%d - nregs "
           "%d - shmem %d - cuda stream id %ld%s\n",
           func_name, pc, grid_launch_id, p->config->gridDimX, p->config->gridDimY, p->config->gridDimZ,
@@ -352,7 +365,7 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_l
           should_enable_instrumentation ? "" : " (NOT INSTRUMENTED)");
     } else {
       cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
-      printf(
+      fprintf(intermediate_trace_file,
           "Kernel %s - PC 0x%lx - grid launch id %ld - grid size %d,%d,%d - block size %d,%d,%d - nregs "
           "%d - shmem %d - cuda stream id %ld%s\n",
           func_name, pc, grid_launch_id, p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX, p->blockDimY,
@@ -440,12 +453,12 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
       } else {
         if (streamStatus != cudaStreamCaptureStatusActive) {
           if (verbose >= 1) {
-            printf("kernel %s not captured by cuda graph\n", nvbit_get_func_name(ctx, func));
+            fprintf(intermediate_trace_file, "kernel %s not captured by cuda graph\n", nvbit_get_func_name(ctx, func));
           }
           leave_kernel_launch();
         } else {
           if (verbose >= 1) {
-            printf("kernel %s captured by cuda graph\n", nvbit_get_func_name(ctx, func));
+            fprintf(intermediate_trace_file, "kernel %s captured by cuda graph\n", nvbit_get_func_name(ctx, func));
           }
         }
       }
@@ -510,13 +523,13 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 
           // Print a warning if function patterns were specified but no functions matched
           if (!function_patterns.empty() && !any_function_matched) {
-            printf("\n!!! WARNING: No functions matched the specified FUNC_NAME_FILTER patterns !!!\n");
-            printf("Specified patterns:\n");
+            fprintf(intermediate_trace_file, "\n!!! WARNING: No functions matched the specified FUNC_NAME_FILTER patterns !!!\n");
+            fprintf(intermediate_trace_file, "Specified patterns:\n");
             for (const auto &pattern : function_patterns) {
-              printf("  - %s\n", pattern.c_str());
+              fprintf(intermediate_trace_file, "  - %s\n", pattern.c_str());
             }
             const char *kernel_name = nvbit_get_func_name(ctx, func);
-            printf("Skipping instrumentation for kernel: %s\n\n", kernel_name);
+            fprintf(intermediate_trace_file, "Skipping instrumentation for kernel: %s\n\n", kernel_name);
           }
 
           nvbit_enable_instrumented(ctx, func, should_enable_instrumentation);
@@ -526,7 +539,7 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 
           if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
             cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
-            printf(
+            fprintf(intermediate_trace_file, 
                 "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
                 "%d - shmem %d - cuda stream id %ld\n",
                 kernel_name, nvbit_get_func_addr(ctx, func), p->config->gridDimX, p->config->gridDimY,
@@ -534,7 +547,7 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
                 shmem_static_nbytes + p->config->sharedMemBytes, (uint64_t)p->config->hStream);
           } else {
             cuLaunchKernel_params *p = (cuLaunchKernel_params *)params;
-            printf(
+            fprintf(intermediate_trace_file,
                 "Kernel %s - PC 0x%lx - grid size %d,%d,%d - block size %d,%d,%d - nregs "
                 "%d - shmem %d - cuda stream id %ld\n",
                 kernel_name, nvbit_get_func_addr(ctx, func), p->gridDimX, p->gridDimY, p->gridDimZ, p->blockDimX,
@@ -548,7 +561,7 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
           cudaDeviceSynchronize();
           cudaError_t kernelError = cudaGetLastError();
           if (kernelError != cudaSuccess) {
-            printf("Kernel launch error: %s\n", cudaGetErrorString(kernelError));
+            fprintf(intermediate_trace_file, "Kernel launch error: %s\n", cudaGetErrorString(kernelError));
             assert(0);
           }
 
@@ -575,7 +588,7 @@ void nvbit_at_graph_node_launch(CUcontext ctx, CUfunction func, CUstream stream,
   nvbit_set_at_launch(ctx, func, (uint64_t)global_grid_launch_id, stream, launch_handle);
   nvbit_get_func_config(ctx, func, &config);
 
-  printf(
+  fprintf(intermediate_trace_file,
       "Graph Node Launch - Kernel %s - PC 0x%lx - grid launch id %ld - grid size %d,%d,%d "
       "- block size %d,%d,%d - nregs %d - shmem %d - cuda stream id %ld\n",
       func_name, pc, global_grid_launch_id, config.gridDimX, config.gridDimY, config.gridDimZ, config.blockDimX,
@@ -602,7 +615,7 @@ void *recv_thread_fun(void *) {
     // Check for timeout
     time_t current_time = time(0);
     if (difftime(current_time, last_recv_time) > deadlock_timeout) {
-      printf("\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n", deadlock_timeout);
+      fprintf(intermediate_trace_file, "\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n", deadlock_timeout);
       timeout_occurred = true;
       break;  // Exit the loop to proceed with logging
     }
@@ -683,7 +696,7 @@ void *recv_thread_fun(void *) {
               current_time = time(0);
               if (difftime(current_time, dump_start_time) > dump_intermedia_trace_timeout) {
                 if (!dump_timeout_reached) {
-                  printf("\n!!! INTERMEDIATE TRACE DUMPING STOPPED: Timeout of %d seconds reached !!!\n\n",
+                  fprintf(intermediate_trace_file, "\n!!! INTERMEDIATE TRACE DUMPING STOPPED: Timeout of %d seconds reached !!!\n\n",
                          dump_intermedia_trace_timeout);
                   dump_timeout_reached = true;
                 }
@@ -692,23 +705,23 @@ void *recv_thread_fun(void *) {
 
             // Only dump if timeout not reached
             if (!dump_timeout_reached) {
-              printf("INTERMEDIATE REG TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
+              fprintf(intermediate_trace_file, "INTERMEDIATE REG TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                      key.warp_id);
               // To match with the PC offset in ncu reports
-              printf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[trace.opcode_id].c_str(), (trace.pc / 16) + 1,
+              fprintf(intermediate_trace_file, "  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[trace.opcode_id].c_str(), (trace.pc / 16) + 1,
                      trace.pc);
 
               for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++) {
-                printf("  * ");
+                fprintf(intermediate_trace_file, "  * ");
                 for (int i = 0; i < 32; i++) {
-                  printf("Reg%zu_T%d: 0x%08x ", reg_idx, i, trace.reg_values[reg_idx][i]);
+                  fprintf(intermediate_trace_file, "Reg%zu_T%d: 0x%08x ", reg_idx, i, trace.reg_values[reg_idx][i]);
                 }
-                printf("\n");
+                fprintf(intermediate_trace_file, "\n");
               }
               for (size_t i = 0; i < trace.ureg_values.size(); i++) {
-                printf("  * UREG%zu: 0x%08x\n", i, trace.ureg_values[i]);
+                fprintf(intermediate_trace_file, "  * UREG%zu: 0x%08x\n", i, trace.ureg_values[i]);
               }
-              printf("\n");
+              fprintf(intermediate_trace_file, "\n");
             }
           }
 
@@ -730,7 +743,7 @@ void *recv_thread_fun(void *) {
               current_time = time(0);
               if (difftime(current_time, dump_start_time) > dump_intermedia_trace_timeout) {
                 if (!dump_timeout_reached) {
-                  printf("\n!!! INTERMEDIATE TRACE DUMPING STOPPED: Timeout of %d seconds reached !!!\n\n",
+                  fprintf(intermediate_trace_file, "\n!!! INTERMEDIATE TRACE DUMPING STOPPED: Timeout of %d seconds reached !!!\n\n",
                          dump_intermedia_trace_timeout);
                   dump_timeout_reached = true;
                 }
@@ -739,25 +752,25 @@ void *recv_thread_fun(void *) {
 
             // Only dump if timeout not reached
             if (!dump_timeout_reached) {
-              printf("INTERMEDIATE MEM TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
+              fprintf(intermediate_trace_file, "INTERMEDIATE MEM TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                      key.warp_id);
-              printf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[mem->opcode_id].c_str(), (mem->pc / 16) + 1,
+              fprintf(intermediate_trace_file, "  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[mem->opcode_id].c_str(), (mem->pc / 16) + 1,
                      mem->pc);
 
               // Print memory addresses
-              printf("  Memory Addresses:\n  * ");
+              fprintf(intermediate_trace_file, "  Memory Addresses:\n  * ");
               int printed = 0;
               for (int i = 0; i < 32; i++) {
                 if (mem->addrs[i] != 0) {  // Only print non-zero addresses
-                  printf("T%d: 0x%016lx ", i, mem->addrs[i]);
+                  fprintf(intermediate_trace_file, "T%d: 0x%016lx ", i, mem->addrs[i]);
                   printed++;
                   // Add a newline every 4 addresses for readability
                   if (printed % 4 == 0 && i < 31) {
-                    printf("\n    ");
+                    fprintf(intermediate_trace_file, "\n    ");
                   }
                 }
               }
-              printf("\n\n");
+              fprintf(intermediate_trace_file, "\n\n");
             }
           }
 
@@ -767,7 +780,7 @@ void *recv_thread_fun(void *) {
           num_processed_bytes += sizeof(mem_access_t);
         } else {
           // Unknown message type, skip minimum amount of bytes
-          printf("ERROR: Unknown message type %d received\n", header->type);
+          fprintf(intermediate_trace_file, "ERROR: Unknown message type %d received\n", header->type);
           num_processed_bytes += sizeof(message_header_t);
         }
       }
@@ -819,8 +832,8 @@ void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, 
   if (!enable_logging) {
     // If logging is disabled but a timeout occurred, still print a warning to stdout
     if (timeout_occurred) {
-      printf("\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n", deadlock_timeout);
-      printf("Logging is disabled. Set ENABLE_LOGGING=1 to generate detailed logs.\n\n");
+      fprintf(intermediate_trace_file, "\n!!! POTENTIAL DEADLOCK DETECTED: No data received for %d seconds !!!\n", deadlock_timeout);
+      fprintf(intermediate_trace_file, "Logging is disabled. Set ENABLE_LOGGING=1 to generate detailed logs.\n\n");
     }
     return;
   }
@@ -848,10 +861,10 @@ void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, 
     // Open file for writing
     logfile = fopen(filename, "w");
     if (!logfile) {
-      printf("Error: Could not open log file %s for writing\n", filename);
+      fprintf(intermediate_trace_file, "Error: Could not open log file %s for writing\n", filename);
       logfile = stdout;  // Fallback to stdout if file can't be opened
     } else {
-      printf("Writing trace information to %s\n", filename);
+      fprintf(intermediate_trace_file, "Writing trace information to %s\n", filename);
     }
 
     // Always create a file for the last traces, regardless of timeout
@@ -860,10 +873,10 @@ void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, 
 
     last_traces_file = fopen(last_traces_filename, "w");
     if (!last_traces_file) {
-      printf("Error: Could not open last traces file %s for writing\n", last_traces_filename);
+      fprintf(intermediate_trace_file, "Error: Could not open last traces file %s for writing\n", last_traces_filename);
       last_traces_file = stdout;  // Fallback to stdout
     } else {
-      printf("Writing last traces to %s\n", last_traces_filename);
+      fprintf(intermediate_trace_file, "Writing last traces to %s\n", last_traces_filename);
     }
   }
 
@@ -958,5 +971,39 @@ void dump_trace_logs(const std::map<WarpKey, std::vector<TraceRecord>> &traces, 
   // Close the file if it's not stdout
   if (logfile != stdout) {
     fclose(logfile);
+  }
+}
+
+/**
+ * Creates the intermediate trace file if needed
+ */
+void create_intermediate_file() {
+  if (log_to_stdout_intermediate) {
+    // If there's already a file and it's not stdout, close it and use stdout
+    if (intermediate_trace_file != NULL && intermediate_trace_file != stdout) {
+      fclose(intermediate_trace_file);
+    }
+    intermediate_trace_file = stdout;
+    return;
+  }
+  
+  // If there's already a file and it's not stdout, use it directly
+  if (intermediate_trace_file != NULL && intermediate_trace_file != stdout) {
+    return;
+  }
+  
+  // Need to create a new file
+  char filename[256];
+  time_t now = time(0);
+  struct tm *timeinfo = localtime(&now);
+  char timestamp[40];
+  strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", timeinfo);
+  snprintf(filename, sizeof(filename), "intermediate_trace_%s.log", timestamp);
+  intermediate_trace_file = fopen(filename, "w");
+  if (!intermediate_trace_file) {
+    fprintf(stderr, "Error opening intermediate trace file. Falling back to stdout.\n");
+    intermediate_trace_file = stdout;
+  } else {
+    fprintf(stdout, "Writing intermediate traces to %s\n", filename);
   }
 }
