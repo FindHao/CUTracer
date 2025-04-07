@@ -22,7 +22,6 @@ int log_to_stdout;
 int store_last_traces_only;
 int dump_intermedia_trace;
 int dump_intermedia_trace_timeout;
-int log_to_stdout_intermediate;
 
 // Function name filters
 std::vector<std::string> function_patterns;
@@ -229,15 +228,13 @@ void init_config_from_env() {
   get_var_int(enable_logging, "ENABLE_LOGGING", 1, "Enable/disable logging (1=enabled, 0=disabled)");
   get_var_int(log_last_traces_only, "LOG_LAST_TRACES_ONLY", 0,
               "Only log the last trace for each warp (1=enabled, 0=disabled)");
-  get_var_int(log_to_stdout, "LOG_TO_STDOUT", 0, "Log to stdout instead of files (1=enabled, 0=disabled)");
+  get_var_int(log_to_stdout, "LOG_TO_STDOUT", 1, "Log to stdout instead of files (1=enabled, 0=disabled)");
   get_var_int(store_last_traces_only, "STORE_LAST_TRACES_ONLY", 0,
               "Only store the last trace for each warp in memory (1=enabled, 0=disabled)");
   get_var_int(dump_intermedia_trace, "DUMP_INTERMEDIA_TRACE", 0,
               "Dump intermediate trace data to stdout (1=enabled, 0=disabled)");
   get_var_int(dump_intermedia_trace_timeout, "DUMP_INTERMEDIA_TRACE_TIMEOUT", 0,
               "Timeout in seconds for intermediate trace dumping (0=unlimited)");
-  get_var_int(log_to_stdout_intermediate, "LOG_TO_STDOUT_INTERMEDIATE", 1,
-              "Log intermediate trace data to stdout instead of a file (1=enabled, 0=disabled)");
 
   // Get function name filter
   const char *patterns_env = getenv("FUNC_NAME_FILTER");
