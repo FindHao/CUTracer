@@ -185,9 +185,6 @@ static void get_var_int(int &var, const char *env_name, int default_val, const c
         var = atoi(env_val);
     } else {
         var = default_val;
-        if (verbose) {
-            printf("Using default value for %s = %d\n", env_name, default_val);
-        }
     }
     printf("%s = %d (%s)\n", env_name, var, description);
 }
@@ -241,7 +238,7 @@ void init_config_from_env() {
   if (patterns_env) {
     parse_function_patterns(patterns_env);
   } else if (verbose) {
-    printf("No function name filters specified. Instrumenting all functions.\n");
+    printf("WARNING: No function name filters specified. Instrumenting all functions.\n");
   }
 
   std::string pad(100, '-');

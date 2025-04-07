@@ -9,12 +9,12 @@ def test_tensor_addition_on_gpu():
 
     print("Tensor A:", a)
     print("Tensor B:", b)
+    for i in range(3):  
+        a = a + b
 
-    c = a + b
+    print("Result (A + B):", a)
 
-    print("Result (A + B):", c)
-
-    return c
+    return a
 
 
 if __name__ == "__main__":
