@@ -26,6 +26,7 @@ int dump_intermedia_trace_timeout;
 int allow_reinstrument;      // if true, allow instrumenting the same kernel multiple times
 uint32_t kernel_iter_begin;  // start instrumenting from this kernel iteration (0=first iteration)
 int single_kernel_trace;
+uint64_t sampling_rate;      // Sampling rate for trace dump (1=every instruction)
 
 // Function name filters
 std::vector<std::string> function_patterns;
@@ -199,11 +200,18 @@ static void get_var_uint32(uint32_t &var, const char *env_name, uint32_t default
     var = (uint32_t)atoll(env_val);
   } else {
     var = default_val;
-    if (verbose) {
-      printf("Using default value for %s = %u\n", env_name, default_val);
-    }
   }
   printf("%s = %u (%s)\n", env_name, var, description);
+}
+
+static void get_var_uint64(uint64_t &var, const char *env_name, uint64_t default_val, const char *description) {
+  const char *env_val = getenv(env_name);
+  if (env_val) {
+    var = (uint64_t)atoll(env_val);
+  } else {
+    var = default_val;
+  }
+  printf("%s = %lu (%s)\n", env_name, var, description);
 }
 
 // Initialize all configuration variables
@@ -241,6 +249,8 @@ void init_config_from_env() {
   get_var_uint32(kernel_iter_begin, "KERNEL_ITER_BEGIN", 0,
                  "Start instrumenting from this kernel iteration (0=first iteration)");
   get_var_int(single_kernel_trace, "SINGLE_KERNEL_TRACE", 0, "Enable single kernel trace (1=enabled, 0=disabled)");
+  get_var_uint64(sampling_rate, "SAMPLING_RATE", 1, 
+                "Sampling rate for trace dump (1=every instruction, N=every Nth instruction)");
 
   // Get function name filter
   const char *patterns_env = getenv("FUNC_NAME_FILTER");

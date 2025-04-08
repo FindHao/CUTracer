@@ -116,6 +116,9 @@ struct WarpKey {
 /* Map to store traces for each warp */
 std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
 
+/* Map to count executions for each warp to implement sampling */
+std::map<WarpKey, uint64_t> warp_exec_counters;
+
 /* Store the name of the currently executing kernel */
 std::string current_kernel_name;
 
@@ -795,6 +798,8 @@ void *recv_thread_fun(void *) {
           if (ri->cta_id_x == -1) {
             // Clear traces to prepare for the next kernel
             warp_traces.clear();
+            // Clear execution counters when a kernel completes
+            warp_exec_counters.clear();
             // Reset the dump timeout when a new kernel starts
             dump_start_time = time(0);
             dump_timeout_reached = false;
@@ -860,8 +865,14 @@ void *recv_thread_fun(void *) {
               }
             }
 
-            // Only dump if timeout not reached
-            if (!dump_timeout_reached) {
+            // Increment the execution counter for this warp
+            if (warp_exec_counters.find(key) == warp_exec_counters.end()) {
+              warp_exec_counters[key] = 0;
+            }
+            warp_exec_counters[key]++;
+
+            // Only dump if timeout not reached and sampling rate condition is met
+            if (!dump_timeout_reached && (warp_exec_counters[key] % sampling_rate == 0)) {
               lprintf("INTERMEDIATE REG TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                       key.warp_id);
               // To match with the PC offset in ncu reports
@@ -907,8 +918,14 @@ void *recv_thread_fun(void *) {
               }
             }
 
-            // Only dump if timeout not reached
-            if (!dump_timeout_reached) {
+            // Increment the execution counter for this warp
+            if (warp_exec_counters.find(key) == warp_exec_counters.end()) {
+              warp_exec_counters[key] = 0;
+            }
+            warp_exec_counters[key]++;
+
+            // Only dump if timeout not reached and sampling rate condition is met
+            if (!dump_timeout_reached && (warp_exec_counters[key] % sampling_rate == 0)) {
               lprintf("INTERMEDIATE MEM TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                       key.warp_id);
               lprintf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[mem->opcode_id].c_str(), (mem->pc / 16) + 1,
@@ -949,6 +966,8 @@ void *recv_thread_fun(void *) {
 
   // Clear the map after printing
   warp_traces.clear();
+  // Clear the execution counters
+  warp_exec_counters.clear();
 
   free(recv_buffer);
   if (log_handle_main_trace && log_handle_main_trace != stdout) {
