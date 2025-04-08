@@ -22,6 +22,8 @@ int log_to_stdout;
 int store_last_traces_only;
 int dump_intermedia_trace;
 int dump_intermedia_trace_timeout;
+int allow_reinstrument;  // if true, allow instrumenting the same kernel multiple times
+uint32_t kernel_iter_begin;  // start instrumenting from this kernel iteration (0=first iteration)
 
 // Function name filters
 std::vector<std::string> function_patterns;
@@ -232,6 +234,10 @@ void init_config_from_env() {
               "Dump intermediate trace data to stdout (1=enabled, 0=disabled)");
   get_var_int(dump_intermedia_trace_timeout, "DUMP_INTERMEDIA_TRACE_TIMEOUT", 0,
               "Timeout in seconds for intermediate trace dumping (0=unlimited)");
+  get_var_int(allow_reinstrument, "ALLOW_REINSTRUMENT", 0,
+              "Allow instrumenting the same kernel multiple times (1=enabled, 0=disabled)");
+  get_var_uint32(kernel_iter_begin, "KERNEL_ITER_BEGIN", 0,
+                "Start instrumenting from this kernel iteration (0=first iteration)");
 
   // Get function name filter
   const char *patterns_env = getenv("FUNC_NAME_FILTER");

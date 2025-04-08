@@ -19,6 +19,8 @@ extern int store_last_traces_only;
 extern int dump_intermedia_trace;
 extern int dump_intermedia_trace_timeout;
 extern int log_to_stdout_intermediate;
+extern int allow_reinstrument;
+extern uint32_t kernel_iter_begin;
 
 // Function name patterns to filter
 extern std::vector<std::string> function_patterns;
