@@ -121,6 +121,9 @@ std::string current_kernel_name;
 
 /* File handle for intermediate trace output. not thread safe. */
 FILE *log_handle = NULL;
+// log_handle can be changed by create_kernel_log_file(). log_handle_main_trace is used to store the original
+// log_handle.
+FILE *log_handle_main_trace = NULL;
 
 /**
  * Base template function for formatted output to different destinations
@@ -189,7 +192,7 @@ void create_trace_file(const char *custom_filename = nullptr, bool create_new_fi
   if (log_handle != NULL && log_handle != stdout && !create_new_file) {
     return;
   }
-  if (create_new_file && log_handle != NULL && log_handle != stdout) {
+  if (create_new_file && log_handle != NULL && log_handle != stdout && log_handle != log_handle_main_trace) {
     fclose(log_handle);
   }
   // Need to create a new file
@@ -268,7 +271,6 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
 
   /* add kernel itself to the related function vector */
   related_functions.push_back(func);
-
   /* iterate on function */
   for (auto f : related_functions) {
     if (kernel_execution_count.find(f) == kernel_execution_count.end()) {
@@ -452,12 +454,18 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_l
 
   // Print a warning if function patterns were specified but no functions matched
   if (!function_patterns.empty() && !any_function_matched) {
-    loprintf("\n!!! WARNING: No functions matched the specified FUNC_NAME_FILTER patterns !!!\n");
+    loprintf("\nINFO: No functions matched the specified FUNC_NAME_FILTER patterns\n");
     loprintf("Specified patterns:\n");
     for (const auto &pattern : function_patterns) {
       loprintf("  - %s\n", pattern.c_str());
     }
-    loprintf("Skipping instrumentation for kernel: %s\n\n", func_name);
+    // Get both demangled and mangled function names
+    const char *mangled_name = nvbit_get_func_name(ctx, func, true);
+    loprintf("Skipping instrumentation for kernel: %s\n", func_name);
+    if (mangled_name && strcmp(func_name, mangled_name) != 0) {
+      loprintf("Mangled name: %s\n", mangled_name);
+    }
+    loprintf("\n");
   }
 
   // During stream capture or graph building, the kernel doesn't actually launch, so don't set launch parameters
@@ -481,7 +489,9 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_l
     nvbit_set_at_launch(ctx, func, (uint64_t)grid_launch_id, stream);
 
     uint32_t current_iter = kernel_execution_count[func];
-    create_kernel_log_file(ctx, func, current_iter);
+    if (should_enable_instrumentation) {
+      create_kernel_log_file(ctx, func, current_iter);
+    }
 
     if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
       cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
@@ -671,7 +681,9 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
 
           // Create a log file for this kernel execution
           uint32_t current_iter = kernel_execution_count[func];
-          create_kernel_log_file(ctx, func, current_iter);
+          if (should_enable_instrumentation) {
+            create_kernel_log_file(ctx, func, current_iter);
+          }
 
           if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
             cuLaunchKernelEx_params *p = (cuLaunchKernelEx_params *)params;
@@ -723,9 +735,11 @@ void nvbit_at_graph_node_launch(CUcontext ctx, CUfunction func, CUstream stream,
   nvbit_get_func_config(ctx, func, &config);
 
   uint32_t current_iter = kernel_execution_count[func];
-
+  bool should_enable_instrumentation = function_patterns.empty() || any_function_matched;
   // Create a log file for this graph node kernel
-  create_kernel_log_file(ctx, func, current_iter);
+  if (should_enable_instrumentation) {
+    create_kernel_log_file(ctx, func, current_iter);
+  }
 
   loprintf(
       "Graph Node Launch - Kernel %s - PC 0x%lx - grid launch id %ld - iteration %u - grid size %d,%d,%d "
@@ -781,6 +795,11 @@ void *recv_thread_fun(void *) {
             // Reset the dump timeout when a new kernel starts
             dump_start_time = time(0);
             dump_timeout_reached = false;
+            if (log_handle_main_trace && log_handle != log_handle_main_trace) {
+              printf("==============debug log_handle: %p\n", log_handle);
+              log_handle = log_handle_main_trace;
+              printf("==============debug log_handle: %p\n", log_handle);
+            }
             break;
           }
 
@@ -929,6 +948,14 @@ void *recv_thread_fun(void *) {
   warp_traces.clear();
 
   free(recv_buffer);
+  if (log_handle_main_trace && log_handle_main_trace != stdout) {
+    if (log_handle != log_handle_main_trace) {
+      fclose(log_handle);
+      log_handle = NULL;
+    }
+    fclose(log_handle_main_trace);
+    log_handle_main_trace = NULL;
+  }
   recv_thread_done = RecvThreadState::FINISHED;
   return NULL;
 }
@@ -960,4 +987,5 @@ void nvbit_at_init() {
   init_config_from_env();
   // Create intermediate trace file if needed
   create_trace_file();
+  log_handle_main_trace = log_handle;
 }
