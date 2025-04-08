@@ -22,7 +22,8 @@ extern int dump_intermedia_trace_timeout;
 extern int allow_reinstrument;
 extern uint32_t kernel_iter_begin;
 extern int single_kernel_trace;
-extern uint64_t sampling_rate;   // Sampling rate for trace dump (1=every instruction)
+extern uint64_t sampling_rate_warp;   // Sampling rate for trace dump based on warp (1=every instruction, N=every Nth instruction per warp)
+extern uint64_t sampling_rate;        // Sampling rate for trace dump based on received data (1=every instruction, N=every Nth instruction)
 
 // Function name patterns to filter
 extern std::vector<std::string> function_patterns;

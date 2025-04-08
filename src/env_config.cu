@@ -26,7 +26,8 @@ int dump_intermedia_trace_timeout;
 int allow_reinstrument;      // if true, allow instrumenting the same kernel multiple times
 uint32_t kernel_iter_begin;  // start instrumenting from this kernel iteration (0=first iteration)
 int single_kernel_trace;
-uint64_t sampling_rate;      // Sampling rate for trace dump (1=every instruction)
+uint64_t sampling_rate_warp; // Sampling rate for trace dump based on warp (1=every instruction)
+uint64_t sampling_rate;      // Sampling rate for trace dump based on received data (1=every instruction)
 
 // Function name filters
 std::vector<std::string> function_patterns;
@@ -249,8 +250,25 @@ void init_config_from_env() {
   get_var_uint32(kernel_iter_begin, "KERNEL_ITER_BEGIN", 0,
                  "Start instrumenting from this kernel iteration (0=first iteration)");
   get_var_int(single_kernel_trace, "SINGLE_KERNEL_TRACE", 0, "Enable single kernel trace (1=enabled, 0=disabled)");
+  get_var_uint64(sampling_rate_warp, "SAMPLING_RATE_WARP", 1, 
+                "Sampling rate for trace dump based on warp count (1=every instruction per warp, N=every Nth instruction per warp)");
   get_var_uint64(sampling_rate, "SAMPLING_RATE", 1, 
-                "Sampling rate for trace dump (1=every instruction, N=every Nth instruction)");
+                "Sampling rate for trace dump based on received data (1=every instruction, N=every Nth instruction)");
+
+  // Check that both sampling rate methods aren't enabled at the same time
+  if (sampling_rate_warp > 1 && sampling_rate > 1) {
+    printf("WARNING: Both SAMPLING_RATE_WARP and SAMPLING_RATE are set. Using SAMPLING_RATE_WARP and ignoring SAMPLING_RATE.\n");
+    sampling_rate = 1; // Reset sampling_rate to default (every instruction)
+  }
+  
+  // Output information about which sampling method is being used
+  if (sampling_rate_warp == 1 && sampling_rate == 1) {
+    printf("Using default sampling rate: every instruction will be traced.\n");
+  } else if (sampling_rate_warp > 1) {
+    printf("Using warp-based sampling: every %lu instruction per warp will be traced.\n", sampling_rate_warp);
+  } else if (sampling_rate > 1) {
+    printf("Using global sampling: every %lu message will be traced.\n", sampling_rate);
+  }
 
   // Get function name filter
   const char *patterns_env = getenv("FUNC_NAME_FILTER");

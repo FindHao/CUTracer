@@ -119,6 +119,39 @@ std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
 /* Map to count executions for each warp to implement sampling */
 std::map<WarpKey, uint64_t> warp_exec_counters;
 
+/* Global counter for message-based sampling */
+uint64_t global_message_counter = 0;
+
+/**
+ * Determines whether a trace should be dumped based on sampling rate configuration
+ * and updates the relevant counters
+ *
+ * @param key The warp key for warp-based sampling
+ * @return true if the trace should be dumped, false otherwise
+ */
+bool shouldDumpTrace(const WarpKey &key) {
+  // Increment the global message counter for message-based sampling
+  global_message_counter++;
+
+  // Always count the number of instructions executed for each warp
+  if (warp_exec_counters.find(key) == warp_exec_counters.end()) {
+    warp_exec_counters[key] = 0;
+  }
+  warp_exec_counters[key]++;
+
+  // According to the sampling rate, decide whether to dump the trace
+  if (sampling_rate_warp > 1) {
+    // Use warp-based sampling
+    return (warp_exec_counters[key] % sampling_rate_warp == 0);
+  } else if (sampling_rate > 1) {
+    // Use global message-based sampling
+    return (global_message_counter % sampling_rate == 0);
+  } else {
+    // Both sampling rates are 1, dump all traces
+    return true;
+  }
+}
+
 /* Store the name of the currently executing kernel */
 std::string current_kernel_name;
 
@@ -800,6 +833,8 @@ void *recv_thread_fun(void *) {
             warp_traces.clear();
             // Clear execution counters when a kernel completes
             warp_exec_counters.clear();
+            // Reset the global message counter
+            global_message_counter = 0;
             // Reset the dump timeout when a new kernel starts
             dump_start_time = time(0);
             dump_timeout_reached = false;
@@ -865,14 +900,13 @@ void *recv_thread_fun(void *) {
               }
             }
 
-            // Increment the execution counter for this warp
-            if (warp_exec_counters.find(key) == warp_exec_counters.end()) {
-              warp_exec_counters[key] = 0;
-            }
-            warp_exec_counters[key]++;
+            bool should_dump = false;
 
-            // Only dump if timeout not reached and sampling rate condition is met
-            if (!dump_timeout_reached && (warp_exec_counters[key] % sampling_rate == 0)) {
+            // Determine if we should dump this trace based on sampling configuration
+            should_dump = shouldDumpTrace(key);
+
+            // Only dump if timeout not reached and sampling condition is met
+            if (!dump_timeout_reached && should_dump) {
               lprintf("INTERMEDIATE REG TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                       key.warp_id);
               // To match with the PC offset in ncu reports
@@ -918,14 +952,13 @@ void *recv_thread_fun(void *) {
               }
             }
 
-            // Increment the execution counter for this warp
-            if (warp_exec_counters.find(key) == warp_exec_counters.end()) {
-              warp_exec_counters[key] = 0;
-            }
-            warp_exec_counters[key]++;
+            bool should_dump = false;
 
-            // Only dump if timeout not reached and sampling rate condition is met
-            if (!dump_timeout_reached && (warp_exec_counters[key] % sampling_rate == 0)) {
+            // Determine if we should dump this trace based on sampling configuration
+            should_dump = shouldDumpTrace(key);
+
+            // Only dump if timeout not reached and sampling condition is met
+            if (!dump_timeout_reached && should_dump) {
               lprintf("INTERMEDIATE MEM TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                       key.warp_id);
               lprintf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[mem->opcode_id].c_str(), (mem->pc / 16) + 1,
@@ -968,6 +1001,8 @@ void *recv_thread_fun(void *) {
   warp_traces.clear();
   // Clear the execution counters
   warp_exec_counters.clear();
+  // Reset the global message counter
+  global_message_counter = 0;
 
   free(recv_buffer);
   if (log_handle_main_trace && log_handle_main_trace != stdout) {
