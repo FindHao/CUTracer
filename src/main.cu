@@ -188,6 +188,9 @@ void create_trace_file(const char *custom_filename = nullptr, bool create_new_fi
     return;
   }
 
+  if (log_handle_main_trace) {
+    fflush(log_handle_main_trace);
+  }
   // If there's already a file and it's not stdout, use it directly
   if (log_handle != NULL && log_handle != stdout && !create_new_file) {
     return;
