@@ -62,9 +62,7 @@ CUTracer can be configured using environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | DEADLOCK_TIMEOUT | 10 | Timeout in seconds to detect potential deadlocks |
-| ENABLE_LOGGING | 1 | Enable/disable logging (1=enabled, 0=disabled) |
-| LOG_LAST_TRACES_ONLY | 0 | Only log the last trace for each warp (1=enabled, 0=disabled) |
-| LOG_TO_STDOUT | 0 | Log to stdout instead of files (1=enabled, 0=disabled) |
+| LOG_TO_STDOUT | 1 | Log to stdout instead of files (1=enabled, 0=disabled) |
 | STORE_LAST_TRACES_ONLY | 0 | Only store the last trace for each warp in memory (1=enabled, 0=disabled) |
 | DUMP_INTERMEDIA_TRACE | 0 | Dump intermediate trace data to stdout (1=enabled, 0=disabled) |
 | DUMP_INTERMEDIA_TRACE_TIMEOUT | 0 | Timeout in seconds for intermediate trace dumping (0=unlimited) |
@@ -73,6 +71,9 @@ CUTracer can be configured using environment variables:
 | INSTR_BEGIN | 0 | Beginning of the instruction interval to instrument (used if INSTRS is not set) |
 | INSTR_END | UINT32_MAX | End of the instruction interval to instrument (used if INSTRS is not set) |
 | TOOL_VERBOSE | 0 | Enable verbosity inside the tool |
+| ALLOW_REINSTRUMENT | 0 | Allow instrumenting the same kernel multiple times (1=enabled, 0=disabled) |
+| KERNEL_ITER_BEGIN | 0 | Start instrumenting from this kernel iteration (0=first iteration) |
+| SINGLE_KERNEL_TRACE | 0 | When ALLOW_REINSTRUMENT is enabled, dump trace files using only kernel name without iteration number, overwriting previous traces (1=enabled, 0=disabled) |
 
 ## Examples
 
@@ -131,9 +132,7 @@ ACK_CTX_INIT_LIMITATION = 0 - if set, no warning will be printed for nvbit_at_ct
            INSTR_END = 4294967295 - End of the instruction interval where to apply instrumentation
         TOOL_VERBOSE = 1 - Enable verbosity inside the tool
     DEADLOCK_TIMEOUT = 10 - Timeout in seconds to detect potential deadlocks
-      ENABLE_LOGGING = 1 - Enable/disable logging (1=enabled, 0=disabled)
-LOG_LAST_TRACES_ONLY = 0 - Only log the last trace for each warp (1=enabled, 0=disabled)
-       LOG_TO_STDOUT = 0 - Log to stdout instead of files (1=enabled, 0=disabled)
+       LOG_TO_STDOUT = 1 - Log to stdout instead of files (1=enabled, 0=disabled)
 STORE_LAST_TRACES_ONLY = 0 - Only store the last trace for each warp in memory (1=enabled, 0=disabled)
 DUMP_INTERMEDIA_TRACE = 1 - Dump intermediate trace data to stdout (1=enabled, 0=disabled)
 DUMP_INTERMEDIA_TRACE_TIMEOUT = 10 - Timeout in seconds for intermediate trace dumping (0=unlimited)

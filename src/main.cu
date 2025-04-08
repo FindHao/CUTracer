@@ -244,9 +244,15 @@ void create_kernel_log_file(CUcontext ctx, CUfunction func, uint32_t iteration) 
     strcpy(truncated_name, "unknown_kernel");
   }
 
-  // Create a filename with the truncated name and current iteration
+  // Create a filename with the truncated name
   char filename[256];
-  snprintf(filename, sizeof(filename), "%s_iter%u.log", truncated_name, iteration);
+  if (allow_reinstrument && single_kernel_trace) {
+    // If SINGLE_KERNEL_TRACE and ALLOW_REINSTRUMENT are enabled, use only kernel name without iteration
+    snprintf(filename, sizeof(filename), "%s.log", truncated_name);
+  } else {
+    // Otherwise include iteration number in filename
+    snprintf(filename, sizeof(filename), "%s_iter%u.log", truncated_name, iteration);
+  }
 
   // Create trace file with the custom filename
   create_trace_file(filename, true);
