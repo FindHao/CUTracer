@@ -26,8 +26,8 @@ int dump_intermedia_trace_timeout;
 int allow_reinstrument;      // if true, allow instrumenting the same kernel multiple times
 uint32_t kernel_iter_begin;  // start instrumenting from this kernel iteration (0=first iteration)
 int single_kernel_trace;
-uint64_t sampling_rate_warp; // Sampling rate for trace dump based on warp (1=every instruction)
-uint64_t sampling_rate;      // Sampling rate for trace dump based on received data (1=every instruction)
+uint64_t sampling_rate_warp;  // Sampling rate for trace dump based on warp (1=every instruction)
+uint64_t sampling_rate;       // Sampling rate for trace dump based on received data (1=every instruction)
 
 // Function name filters
 std::vector<std::string> function_patterns;
@@ -220,6 +220,9 @@ void init_config_from_env() {
   // Enable device memory allocation
   setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
 
+  // Get other configuration variables
+  get_var_int(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
+
   // Get instruction range filter
   const char *instr_filter = getenv("INSTRS");
   if (instr_filter) {
@@ -231,9 +234,6 @@ void init_config_from_env() {
     get_var_uint32(instr_end_interval, "INSTR_END", UINT32_MAX,
                    "End of the instruction interval where to apply instrumentation");
   }
-
-  // Get other configuration variables
-  get_var_int(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
   get_var_int(deadlock_timeout, "DEADLOCK_TIMEOUT", 10, "Timeout in seconds to detect potential deadlocks");
   get_var_int(enable_logging, "ENABLE_LOGGING", 1, "Enable/disable logging (1=enabled, 0=disabled)");
   get_var_int(log_last_traces_only, "LOG_LAST_TRACES_ONLY", 0,
@@ -250,17 +250,20 @@ void init_config_from_env() {
   get_var_uint32(kernel_iter_begin, "KERNEL_ITER_BEGIN", 0,
                  "Start instrumenting from this kernel iteration (0=first iteration)");
   get_var_int(single_kernel_trace, "SINGLE_KERNEL_TRACE", 0, "Enable single kernel trace (1=enabled, 0=disabled)");
-  get_var_uint64(sampling_rate_warp, "SAMPLING_RATE_WARP", 1, 
-                "Sampling rate for trace dump based on warp count (1=every instruction per warp, N=every Nth instruction per warp)");
-  get_var_uint64(sampling_rate, "SAMPLING_RATE", 1, 
-                "Sampling rate for trace dump based on received data (1=every instruction, N=every Nth instruction)");
+  get_var_uint64(sampling_rate_warp, "SAMPLING_RATE_WARP", 1,
+                 "Sampling rate for trace dump based on warp count (1=every instruction per warp, N=every Nth "
+                 "instruction per warp)");
+  get_var_uint64(sampling_rate, "SAMPLING_RATE", 1,
+                 "Sampling rate for trace dump based on received data (1=every instruction, N=every Nth instruction)");
 
   // Check that both sampling rate methods aren't enabled at the same time
   if (sampling_rate_warp > 1 && sampling_rate > 1) {
-    printf("WARNING: Both SAMPLING_RATE_WARP and SAMPLING_RATE are set. Using SAMPLING_RATE_WARP and ignoring SAMPLING_RATE.\n");
-    sampling_rate = 1; // Reset sampling_rate to default (every instruction)
+    printf(
+        "WARNING: Both SAMPLING_RATE_WARP and SAMPLING_RATE are set. Using SAMPLING_RATE_WARP and ignoring "
+        "SAMPLING_RATE.\n");
+    sampling_rate = 1;  // Reset sampling_rate to default (every instruction)
   }
-  
+
   // Output information about which sampling method is being used
   if (sampling_rate_warp == 1 && sampling_rate == 1) {
     printf("Using default sampling rate: every instruction will be traced.\n");

@@ -360,11 +360,10 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
       oprintf("Inspecting function %s at address 0x%lx\n", nvbit_get_func_name(ctx, f), nvbit_get_func_addr(ctx, f));
     }
 
-    uint32_t cnt = 0;
     /* iterate on all the static instructions in the function */
-    for (auto instr : instrs) {
+    for (uint32_t cnt = 0; cnt < instrs.size(); cnt++) {
+      auto instr = instrs[cnt];
       if (!is_instruction_in_ranges(cnt)) {
-        cnt++;
         continue;
       }
       if (verbose) {
@@ -439,7 +438,6 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
       for (int num : ureg_num_list) {
         nvbit_add_call_arg_ureg_val(instr, num, true);
       }
-      cnt++;
     }
   }
 }
@@ -910,7 +908,7 @@ void *recv_thread_fun(void *) {
               lprintf("INTERMEDIATE REG TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                       key.warp_id);
               // To match with the PC offset in ncu reports
-              lprintf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[trace.opcode_id].c_str(), (trace.pc / 16) + 1,
+              lprintf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[trace.opcode_id].c_str(), trace.pc / 16,
                       trace.pc);
 
               for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++) {
