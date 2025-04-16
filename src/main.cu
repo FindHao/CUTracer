@@ -959,8 +959,7 @@ void *recv_thread_fun(void *) {
             if (!dump_timeout_reached && should_dump) {
               lprintf("INTERMEDIATE MEM TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                       key.warp_id);
-              lprintf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[mem->opcode_id].c_str(), (mem->pc / 16) + 1,
-                      mem->pc);
+              lprintf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[mem->opcode_id].c_str(), mem->pc / 16, mem->pc);
 
               // Print memory addresses
               lprintf("  Memory Addresses:\n  * ");
