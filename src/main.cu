@@ -41,8 +41,6 @@
 #include <unordered_set>
 #include <vector>
 
-// Add CUDA runtime header
-#include <cuda_runtime.h>
 
 /* every tool needs to include this once */
 #include "nvbit_tool.h"
