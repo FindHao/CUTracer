@@ -269,17 +269,17 @@ void truncate_mangled_name(const char *mangled_name, char *truncated_buffer, siz
   if (!truncated_buffer || buffer_size == 0) {
     return;
   }
-  
+
   // Default to unknown if no name provided
   if (!mangled_name) {
     snprintf(truncated_buffer, buffer_size, "unknown_kernel");
     return;
   }
-  
+
   // Truncate the name if it's longer than buffer_size - 1 (leave room for null terminator)
   size_t max_length = buffer_size - 1;
   size_t name_len = strlen(mangled_name);
-  
+
   if (name_len > max_length) {
     strncpy(truncated_buffer, mangled_name, max_length);
     truncated_buffer[max_length] = '\0';  // Ensure null termination
@@ -300,7 +300,7 @@ void create_kernel_log_file(CUcontext ctx, CUfunction func, uint32_t iteration) 
 
   // Create a buffer for the truncated name
   char truncated_name[201];  // 200 chars + null terminator
-  
+
   // Truncate the name
   truncate_mangled_name(mangled_name, truncated_name, sizeof(truncated_name));
 
@@ -383,24 +383,21 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
       // Create a filename with the mangled name
       char truncated_name[201];  // 200 chars + null terminator
       truncate_mangled_name(mangled_name, truncated_name, sizeof(truncated_name));
-      
+
       char sass_filename[256];
       snprintf(sass_filename, sizeof(sass_filename), "%s.sass", truncated_name);
-      
+
       // Open the file
       FILE *sass_file = fopen(sass_filename, "w");
       if (sass_file) {
         fprintf(sass_file, "// SASS instructions for kernel: %s\n", mangled_name);
-        fprintf(sass_file, "// Function address: 0x%lx\n\n", nvbit_get_func_addr(ctx, f));
-        
         // Iterate through all instructions and write them to the file
         for (uint32_t i = 0; i < instrs.size(); i++) {
           auto instr = instrs[i];
           uint32_t offset = instr->getOffset();
-          fprintf(sass_file, "%d /*%04x*/ %s\n", 
-                  instr->getIdx(), offset, instr->getSass());
+          fprintf(sass_file, "%d /*%04x*/ %s\n", instr->getIdx(), offset, instr->getSass());
         }
-        
+
         fclose(sass_file);
         if (verbose) {
           oprintf("Saved SASS instructions to %s\n", sass_filename);
