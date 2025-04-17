@@ -260,6 +260,35 @@ void create_trace_file(const char *custom_filename = nullptr, bool create_new_fi
 }
 
 /**
+ * Truncates a mangled function name to make it suitable for use as a filename
+ * @param mangled_name The original mangled name
+ * @param truncated_buffer The buffer to store the truncated name in
+ * @param buffer_size Size of the provided buffer
+ */
+void truncate_mangled_name(const char *mangled_name, char *truncated_buffer, size_t buffer_size) {
+  if (!truncated_buffer || buffer_size == 0) {
+    return;
+  }
+  
+  // Default to unknown if no name provided
+  if (!mangled_name) {
+    snprintf(truncated_buffer, buffer_size, "unknown_kernel");
+    return;
+  }
+  
+  // Truncate the name if it's longer than buffer_size - 1 (leave room for null terminator)
+  size_t max_length = buffer_size - 1;
+  size_t name_len = strlen(mangled_name);
+  
+  if (name_len > max_length) {
+    strncpy(truncated_buffer, mangled_name, max_length);
+    truncated_buffer[max_length] = '\0';  // Ensure null termination
+  } else {
+    strcpy(truncated_buffer, mangled_name);
+  }
+}
+
+/**
  * Creates a log file specifically for a kernel based on its mangled name and iteration count
  * @param ctx CUDA context
  * @param func CUfunction representing the kernel
@@ -271,20 +300,9 @@ void create_kernel_log_file(CUcontext ctx, CUfunction func, uint32_t iteration) 
 
   // Create a buffer for the truncated name
   char truncated_name[201];  // 200 chars + null terminator
-
-  // Truncate the name if it's longer than 200 characters
-  if (mangled_name) {
-    size_t name_len = strlen(mangled_name);
-    if (name_len > 200) {
-      strncpy(truncated_name, mangled_name, 200);
-      truncated_name[200] = '\0';  // Ensure null termination
-    } else {
-      strcpy(truncated_name, mangled_name);
-    }
-  } else {
-    // Fallback if mangled name is not available
-    strcpy(truncated_name, "unknown_kernel");
-  }
+  
+  // Truncate the name
+  truncate_mangled_name(mangled_name, truncated_name, sizeof(truncated_name));
 
   // Create a filename with the truncated name
   char filename[256];
@@ -358,6 +376,38 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
     const std::vector<Instr *> &instrs = nvbit_get_instrs(ctx, f);
     if (verbose) {
       oprintf("Inspecting function %s at address 0x%lx\n", nvbit_get_func_name(ctx, f), nvbit_get_func_addr(ctx, f));
+    }
+
+    // Dump all SASS instructions to a file
+    if (mangled_name) {
+      // Create a filename with the mangled name
+      char truncated_name[201];  // 200 chars + null terminator
+      truncate_mangled_name(mangled_name, truncated_name, sizeof(truncated_name));
+      
+      char sass_filename[256];
+      snprintf(sass_filename, sizeof(sass_filename), "%s.sass", truncated_name);
+      
+      // Open the file
+      FILE *sass_file = fopen(sass_filename, "w");
+      if (sass_file) {
+        fprintf(sass_file, "// SASS instructions for kernel: %s\n", mangled_name);
+        fprintf(sass_file, "// Function address: 0x%lx\n\n", nvbit_get_func_addr(ctx, f));
+        
+        // Iterate through all instructions and write them to the file
+        for (uint32_t i = 0; i < instrs.size(); i++) {
+          auto instr = instrs[i];
+          uint32_t offset = instr->getOffset();
+          fprintf(sass_file, "%d /*%04x*/ %s\n", 
+                  instr->getIdx(), offset, instr->getSass());
+        }
+        
+        fclose(sass_file);
+        if (verbose) {
+          oprintf("Saved SASS instructions to %s\n", sass_filename);
+        }
+      } else {
+        oprintf("Error: Could not create SASS file %s\n", sass_filename);
+      }
     }
 
     /* iterate on all the static instructions in the function */
@@ -837,9 +887,9 @@ void *recv_thread_fun(void *) {
             dump_start_time = time(0);
             dump_timeout_reached = false;
             if (log_handle_main_trace && log_handle != log_handle_main_trace) {
-              printf("==============debug log_handle: %p\n", log_handle);
+              // printf("==============debug log_handle: %p\n", log_handle);
               log_handle = log_handle_main_trace;
-              printf("==============debug log_handle: %p\n", log_handle);
+              // printf("==============debug log_handle: %p\n", log_handle);
             }
             break;
           }
