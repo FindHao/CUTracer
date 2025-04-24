@@ -29,11 +29,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef CUTRACER_COMMON_H
-#define CUTRACER_COMMON_H
 
 #include <stdint.h>
-#include <vector>
 
 /* Message type enum to identify different message types */
 typedef enum { MSG_TYPE_REG_INFO = 0, MSG_TYPE_MEM_ACCESS = 1 } message_type_t;
@@ -43,39 +40,7 @@ typedef struct {
   message_type_t type;  // Type of the message
 } message_header_t;
 
-/* Structure to uniquely identify a warp */
-struct WarpKey {
-  int cta_id_x;
-  int cta_id_y;
-  int cta_id_z;
-  int warp_id;
 
-  // Operator for map comparison
-  bool operator<(const WarpKey &other) const {
-    if (cta_id_x != other.cta_id_x) return cta_id_x < other.cta_id_x;
-    if (cta_id_y != other.cta_id_y) return cta_id_y < other.cta_id_y;
-    if (cta_id_z != other.cta_id_z) return cta_id_z < other.cta_id_z;
-    return warp_id < other.warp_id;
-  }
-  
-  // Hash function for unordered_map
-  struct Hash {
-    size_t operator()(const WarpKey& k) const {
-      return (size_t)k.cta_id_x ^ 
-             ((size_t)k.cta_id_y << 10) ^ 
-             ((size_t)k.cta_id_z << 20) ^ 
-             ((size_t)k.warp_id << 30);
-    }
-  };
-  
-  // Equality operator for unordered_map
-  bool operator==(const WarpKey& other) const {
-    return cta_id_x == other.cta_id_x && 
-           cta_id_y == other.cta_id_y && 
-           cta_id_z == other.cta_id_z && 
-           warp_id == other.warp_id;
-  }
-};
 
 /* information collected in the instrumentation function and passed
  * on the channel from the GPU to the CPU */
@@ -110,12 +75,5 @@ typedef struct {
 } mem_access_t;
 
 /* Structure to represent a single trace record */
-struct TraceRecord {
-  int opcode_id;
-  uint64_t pc;
-  std::vector<std::vector<uint32_t>> reg_values;  // [reg_idx][thread_idx]
-  std::vector<uint32_t> ureg_values;              // [ureg_idx]
-  std::vector<std::vector<uint64_t>> addrs;       // [thread_idx][addr_idx]
-};
 
-#endif // CUTRACER_COMMON_H
+
