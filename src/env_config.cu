@@ -33,6 +33,12 @@ uint64_t sampling_rate;       // Sampling rate for trace dump based on received 
 std::vector<std::string> function_patterns;
 bool any_function_matched = false;
 
+// Loop detection configuration variables
+int loop_win_size;
+int loop_repeat_thresh;
+int loop_hang_timeout;
+int loop_detection_enabled;
+
 // Check if instruction is within specified ranges
 bool is_instruction_in_ranges(uint32_t instr_cnt) {
   if (!use_instr_ranges) {
@@ -248,13 +254,29 @@ void init_config_from_env() {
   get_var_int(allow_reinstrument, "ALLOW_REINSTRUMENT", 0,
               "Allow instrumenting the same kernel multiple times (1=enabled, 0=disabled)");
   get_var_uint32(kernel_iter_begin, "KERNEL_ITER_BEGIN", 0,
-                 "Start instrumenting from this kernel iteration (0=first iteration)");
-  get_var_int(single_kernel_trace, "SINGLE_KERNEL_TRACE", 0, "Enable single kernel trace (1=enabled, 0=disabled)");
+                 "Begin instrumentation from this kernel iteration (0=first)");
+  get_var_int(single_kernel_trace, "SINGLE_KERNEL_TRACE", 0,
+              "Create a single trace file for each kernel (1=enabled, 0=disabled)");
   get_var_uint64(sampling_rate_warp, "SAMPLING_RATE_WARP", 1,
-                 "Sampling rate for trace dump based on warp count (1=every instruction per warp, N=every Nth "
-                 "instruction per warp)");
+                 "Sampling rate for trace dump based on warp (1=every instruction, N=every Nth instruction per warp)");
   get_var_uint64(sampling_rate, "SAMPLING_RATE", 1,
                  "Sampling rate for trace dump based on received data (1=every instruction, N=every Nth instruction)");
+                 
+  // Loop detection configuration
+  get_var_int(loop_win_size, "LOOP_WIN_SIZE", 32, 
+              "Size of the PC window for loop detection");
+  get_var_int(loop_repeat_thresh, "LOOP_REPEAT_THRESH", 16, 
+              "Threshold for repeat count to detect a loop");
+  get_var_int(loop_hang_timeout, "LOOP_HANG_TIMEOUT", 3, 
+              "Timeout in seconds for hang detection");
+  get_var_int(loop_detection_enabled, "LOOP_DETECTION_ENABLED", 1, 
+              "Enable/disable loop detection (1=enabled, 0=disabled)");
+
+  // Parse function name patterns if provided
+  const char *func_patterns = getenv("FUNC_NAME_FILTER");
+  if (func_patterns) {
+    parse_function_patterns(func_patterns);
+  }
 
   // Check that both sampling rate methods aren't enabled at the same time
   if (sampling_rate_warp > 1 && sampling_rate > 1) {
@@ -271,14 +293,6 @@ void init_config_from_env() {
     printf("Using warp-based sampling: every %lu instruction per warp will be traced.\n", sampling_rate_warp);
   } else if (sampling_rate > 1) {
     printf("Using global sampling: every %lu message will be traced.\n", sampling_rate);
-  }
-
-  // Get function name filter
-  const char *patterns_env = getenv("FUNC_NAME_FILTER");
-  if (patterns_env) {
-    parse_function_patterns(patterns_env);
-  } else if (verbose) {
-    printf("WARNING: No function name filters specified. Instrumenting all functions.\n");
   }
 
   std::string pad(100, '-');

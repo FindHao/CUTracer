@@ -40,6 +40,7 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <set>
 
 
 /* every tool needs to include this once */
@@ -56,6 +57,9 @@
 
 /* include environment configuration */
 #include "env_config.h"
+
+/* include loop detection */
+#include "loop_detection.h"
 
 /* Channel used to communicate from GPU to CPU receiving thread */
 #define CHANNEL_SIZE (1l << 20)
@@ -86,31 +90,6 @@ std::map<int, std::string> id_to_sass_map;
 /* Yueming: will fix this part later. grid launch id, incremented at every launch */
 uint64_t global_grid_launch_id = 0;
 
-/* Structure to represent a single trace record */
-struct TraceRecord {
-  int opcode_id;
-  uint64_t pc;
-  std::vector<std::vector<uint32_t>> reg_values;  // [reg_idx][thread_idx]
-  std::vector<uint32_t> ureg_values;              // [ureg_idx]
-  std::vector<std::vector<uint64_t>> addrs;       // [thread_idx][addr_idx]
-};
-
-/* Structure to identify a warp */
-struct WarpKey {
-  int cta_id_x;
-  int cta_id_y;
-  int cta_id_z;
-  int warp_id;
-
-  // Operator for map comparison
-  bool operator<(const WarpKey &other) const {
-    if (cta_id_x != other.cta_id_x) return cta_id_x < other.cta_id_x;
-    if (cta_id_y != other.cta_id_y) return cta_id_y < other.cta_id_y;
-    if (cta_id_z != other.cta_id_z) return cta_id_z < other.cta_id_z;
-    return warp_id < other.warp_id;
-  }
-};
-
 /* Map to store traces for each warp */
 std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
 
@@ -119,6 +98,11 @@ std::map<WarpKey, uint64_t> warp_exec_counters;
 
 /* Global counter for message-based sampling */
 uint64_t global_message_counter = 0;
+
+/* Forward declarations for functions used by other files */
+void loprintf(const char *format, ...);
+void lprintf(const char *format, ...);
+void oprintf(const char *format, ...);
 
 /**
  * Determines whether a trace should be dumped based on sampling rate configuration
@@ -878,6 +862,8 @@ void *recv_thread_fun(void *) {
             warp_exec_counters.clear();
             // Reset the global message counter
             global_message_counter = 0;
+            // Clear loop detection state
+            clear_loop_state();
             // Reset the dump timeout when a new kernel starts
             dump_start_time = time(0);
             dump_timeout_reached = false;
@@ -928,6 +914,9 @@ void *recv_thread_fun(void *) {
             // Normal mode: keep all traces in memory
             warp_traces[key].push_back(trace);
           }
+
+          // Update loop detection state for this warp
+          update_loop_state(key, ri->pc);
 
           // Check if we should dump intermediate trace for register info
           if (dump_intermedia_trace && !dump_timeout_reached) {
@@ -1036,6 +1025,15 @@ void *recv_thread_fun(void *) {
     } else {
       // If no data received, sleep for a short time to avoid busy waiting
       usleep(100000);  // Sleep for 100ms
+    }
+    
+    // Check for kernel hangs
+    if (check_kernel_hang(warp_traces, false) && loop_detection_enabled) {
+      // If a hang is detected and we're configured to reset the device, do so
+      // loprintf("\nAttempting to reset the device to recover from hang...\n");
+      // cudaDeviceReset();
+      // Break the loop to gracefully exit
+      break;
     }
   }
 
