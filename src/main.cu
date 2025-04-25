@@ -444,16 +444,67 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
       FILE *sass_file = fopen(sass_filename, "w");
       if (sass_file) {
         fprintf(sass_file, "// SASS instructions for kernel: %s\n", mangled_name);
+        fprintf(sass_file, "// Format: [Instruction Index] [Offset] [Source Location] [SASS Instruction]\n\n");
+        
+        // Track the last source location to avoid redundant printing
+        std::string last_source_location = "";
+        
+        // Define constants for buffer sizes
+        const size_t FILE_NAME_SIZE = 256;
+        const size_t PATH_NAME_SIZE = 512;
+        
         // Iterate through all instructions and write them to the file
         for (uint32_t i = 0; i < instrs.size(); i++) {
           auto instr = instrs[i];
           uint32_t offset = instr->getOffset();
-          fprintf(sass_file, "%d /*%04x*/ %s\n", instr->getIdx(), offset, instr->getSass());
+          
+          // Get source code location information
+          char *file_name = (char*)malloc(sizeof(char) * FILE_NAME_SIZE);
+          // char* file_name = "";
+          // char* dir_name = "";
+          file_name[0] = '\0'; // Initialize to empty string
+          char *dir_name = (char*)malloc(sizeof(char) * PATH_NAME_SIZE);
+          dir_name[0] = '\0'; // Initialize to empty string
+          uint32_t line = 0;
+          
+          std::string source_location;
+          bool has_line_info = nvbit_get_line_info(ctx, f, offset, &file_name, &dir_name, &line);
+          
+          if (has_line_info && file_name != nullptr && file_name[0] != '\0') {
+            // File path might not include directory information
+            std::string file_path;
+            if (dir_name != nullptr && dir_name[0] != '\0') {
+                file_path = std::string(dir_name) + "/" + std::string(file_name);
+            } else {
+                file_path = std::string(file_name);
+            }
+                
+            source_location = file_path + ":" + std::to_string(line);
+          } else {
+            source_location = "unknown";
+          }
+          
+          // Free allocated memory
+          free(file_name);
+          free(dir_name);
+          
+          // Smart printing: if the source location is the same as the previous instruction,
+          // only print the SASS instruction without repeating the source location
+          if (source_location != last_source_location) {
+            fprintf(sass_file, "%d /*%04x*/ %s    %s\n", 
+                    instr->getIdx(), offset, source_location.c_str(), instr->getSass());
+            last_source_location = source_location;
+          } else {
+            fprintf(sass_file, "%d /*%04x*/ %*s%s\n", 
+                    instr->getIdx(), offset, 
+                    static_cast<int>(source_location.length() + 4), "", // Use spaces for alignment
+                    instr->getSass());
+          }
         }
 
         fclose(sass_file);
         if (verbose) {
-          oprintf("Saved SASS instructions to %s\n", sass_filename);
+          oprintf("Saved SASS instructions with source mapping to %s\n", sass_filename);
         }
       } else {
         oprintf("Error: Could not create SASS file %s\n", sass_filename);
