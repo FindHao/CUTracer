@@ -29,6 +29,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/* ===== Standard Library Includes ===== */
 #include <assert.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -42,6 +43,7 @@
 #include <unordered_set>
 #include <vector>
 
+/* ===== NVBit Tool Includes ===== */
 /* every tool needs to include this once */
 #include "nvbit_tool.h"
 
@@ -57,13 +59,26 @@
 /* include environment configuration */
 #include "env_config.h"
 
+/* ===== Forward Declarations ===== */
+// Forward declarations for functions that are used before they're defined
+template <typename... Args>
+void loprintf(const char *format, Args... args);
+
+template <typename... Args>
+void lprintf(const char *format, Args... args);
+
+template <typename... Args>
+void oprintf(const char *format, Args... args);
+
+bool is_instruction_in_ranges(uint32_t instr_idx);
+
+/* ===== Channel Configuration ===== */
 /* Channel used to communicate from GPU to CPU receiving thread */
 #define CHANNEL_SIZE (1l << 20)
 static __managed__ ChannelDev channel_dev;
 static ChannelHost channel_host;
 
-/* receiving thread and its control variables */
-pthread_t recv_thread;
+/* ===== Data Structures ===== */
 struct TraceRecord {
   int opcode_id;
   uint64_t pc;
@@ -71,6 +86,7 @@ struct TraceRecord {
   std::vector<uint32_t> ureg_values;              // [ureg_idx]
   std::vector<std::vector<uint64_t>> addrs;       // [thread_idx][addr_idx]
 };
+
 /* Structure to uniquely identify a warp */
 struct WarpKey {
   int cta_id_x;
@@ -99,120 +115,80 @@ struct WarpKey {
            warp_id == other.warp_id;
   }
 };
+
+/* Forward declaration of functions using WarpKey */
+bool shouldDumpTrace(const WarpKey &key);
+
+/* Structure to track the loop state of a warp */
+struct WarpLoopState {
+    std::vector<uint64_t> pcs;  // Circular buffer of PCs
+    uint8_t head;               // Current position in circular buffer
+    uint64_t last_sig;          // Last computed signature
+    uint8_t last_period;        // Last loop period
+    uint32_t repeat_cnt;        // Number of consecutive pattern repetitions
+    bool loop_flag;             // Flag indicating loop detection
+    time_t first_loop_time;     // Time when loop was first detected
+
+    // Structure to store detailed information for each instruction in the loop
+    struct LoopInstruction {
+        uint64_t pc;                                    // Program counter
+        int opcode_id;                                 // Instruction opcode ID
+        std::vector<std::vector<uint32_t>> reg_values; // Register values [reg_idx][thread_idx]
+        std::vector<uint32_t> ureg_values;             // Unified register values
+        std::vector<uint64_t> addrs;                   // Memory addresses (if any)
+    };
+
+    // Structure to hold complete loop information
+    struct LoopInfo {
+        std::vector<LoopInstruction> instructions;      // Complete instruction trace for the loop
+        uint8_t period;                                // Loop period
+    };
+    LoopInfo current_loop;
+
+    // Default constructor (using a default window size of 32)
+    WarpLoopState() : pcs(32, 0), head(0), last_sig(0), repeat_cnt(0), loop_flag(false), first_loop_time(0) {}
+
+    WarpLoopState(int window_size)
+        : pcs(window_size, 0), head(0), last_sig(0), repeat_cnt(0), loop_flag(false), first_loop_time(0) {}
+};
+
 enum class RecvThreadState {
   WORKING,
   STOP,
   FINISHED,
 };
+
+/* ===== Global Variables and Constants ===== */
+
+/* Thread control */
+pthread_t recv_thread;
 volatile RecvThreadState recv_thread_done = RecvThreadState::STOP;
-
-/**
- * Structure to track the loop state of a warp
- */
-struct WarpLoopState {
-  std::vector<uint64_t> pcs;  // Circular buffer of PCs
-  uint8_t head;               // Current position in circular buffer
-  uint64_t last_sig;          // Last computed signature
-  uint8_t last_period;        // Last loop period
-  uint32_t repeat_cnt;        // Number of consecutive pattern repetitions
-  bool loop_flag;             // Flag indicating loop detection
-  time_t first_loop_time;     // Time when loop was first detected
-
-  // Default constructor (using a default window size of 32)
-  WarpLoopState() : pcs(32, 0), head(0), last_sig(0), repeat_cnt(0), loop_flag(false), first_loop_time(0) {}
-
-  WarpLoopState(int window_size)
-      : pcs(window_size, 0), head(0), last_sig(0), repeat_cnt(0), loop_flag(false), first_loop_time(0) {}
-};
-
-/**
- * Updates the loop state for a warp based on its current PC
- *
- * @param key The warp key
- * @param pc The program counter
- */
-void update_loop_state(const WarpKey &key, uint64_t pc);
-
-/**
- * Checks if all active warps are stuck in loops
- *
- * @param warp_traces Trace records for each warp
- * @param force_check Force check even if the periodic timer hasn't elapsed
- * @return true if a kernel hang is detected
- */
-bool check_kernel_hang(const std::map<WarpKey, std::vector<TraceRecord>> &warp_traces, bool force_check = false);
-
-/**
- * Clears loop detection state when a kernel completes
- */
-void clear_loop_state();
-
-/* lock */
 pthread_mutex_t cuda_event_mutex;
-
-/* skip flag used to avoid re-entry on the nvbit_callback when issuing
- * flush_channel kernel call */
 bool skip_callback_flag = false;
 
-/* opcode to id map and reverse map  */
-std::map<std::string, int> sass_to_id_map;
-std::map<int, std::string> id_to_sass_map;
-
-/* Yueming: will fix this part later. grid launch id, incremented at every launch */
+/* Timing and state tracking */
+time_t last_hang_check_time = 0;
 uint64_t global_grid_launch_id = 0;
-
-/* Map to store traces for each warp */
-std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
-
-/* Map to count executions for each warp to implement sampling */
-std::map<WarpKey, uint64_t> warp_exec_counters;
-
-/* Global counter for message-based sampling */
 uint64_t global_message_counter = 0;
 
-/* Forward declarations for functions used by other files */
-// void loprintf(const char *format, ...);
-// void lprintf(const char *format, ...);
-// void oprintf(const char *format, ...);
-
-/**
- * Determines whether a trace should be dumped based on sampling rate configuration
- * and updates the relevant counters
- *
- * @param key The warp key for warp-based sampling
- * @return true if the trace should be dumped, false otherwise
- */
-bool shouldDumpTrace(const WarpKey &key) {
-  // Increment the global message counter for message-based sampling
-  global_message_counter++;
-
-  // Always count the number of instructions executed for each warp
-  if (warp_exec_counters.find(key) == warp_exec_counters.end()) {
-    warp_exec_counters[key] = 0;
-  }
-  warp_exec_counters[key]++;
-
-  // According to the sampling rate, decide whether to dump the trace
-  if (sampling_rate_warp > 1) {
-    // Use warp-based sampling
-    return (warp_exec_counters[key] % sampling_rate_warp == 0);
-  } else if (sampling_rate > 1) {
-    // Use global message-based sampling
-    return (global_message_counter % sampling_rate == 0);
-  } else {
-    // Both sampling rates are 1, dump all traces
-    return true;
-  }
-}
-
-/* Store the name of the currently executing kernel */
+/* Kernel information */
 std::string current_kernel_name;
+std::map<std::string, int> sass_to_id_map;
+std::map<int, std::string> id_to_sass_map;
+std::map<CUfunction, uint32_t> kernel_execution_count;
 
-/* File handle for intermediate trace output. not thread safe. */
+/* Warp and loop tracking */
+std::map<WarpKey, std::vector<TraceRecord>> warp_traces;
+std::map<WarpKey, uint64_t> warp_exec_counters;
+std::map<WarpKey, WarpLoopState> loop_states;
+std::set<WarpKey> active_warps;
+
+/* File handling */
 FILE *log_handle = NULL;
-// log_handle can be changed by create_kernel_log_file(). log_handle_main_trace is used to store the original
-// log_handle.
 FILE *log_handle_main_trace = NULL;
+extern bool any_function_matched;
+
+/* ===== Utility Functions for Logging ===== */
 
 /**
  * Base template function for formatted output to different destinations
@@ -223,21 +199,21 @@ FILE *log_handle_main_trace = NULL;
  */
 template <typename... Args>
 void base_fprintf(bool file_output, bool stdout_output, const char *format, Args... args) {
-  // if no output, return
-  if (!file_output && !stdout_output) return;
+    // if no output, return
+    if (!file_output && !stdout_output) return;
 
-  char output_buffer[2048];  // use a large enough buffer
-  snprintf(output_buffer, sizeof(output_buffer), format, args...);
+    char output_buffer[2048];  // use a large enough buffer
+    snprintf(output_buffer, sizeof(output_buffer), format, args...);
 
-  // output to stdout
-  if (stdout_output) {
-    fprintf(stdout, "%s", output_buffer);
-  }
+    // output to stdout
+    if (stdout_output) {
+        fprintf(stdout, "%s", output_buffer);
+    }
 
-  // output to log file (if not stdout)
-  if (file_output && log_handle != NULL && log_handle != stdout) {
-    fprintf(log_handle, "%s", output_buffer);
-  }
+    // output to log file (if not stdout)
+    if (file_output && log_handle != NULL && log_handle != stdout) {
+        fprintf(log_handle, "%s", output_buffer);
+    }
 }
 
 /**
@@ -245,7 +221,7 @@ void base_fprintf(bool file_output, bool stdout_output, const char *format, Args
  */
 template <typename... Args>
 void lprintf(const char *format, Args... args) {
-  base_fprintf(true, false, format, args...);
+    base_fprintf(true, false, format, args...);
 }
 
 /**
@@ -253,14 +229,47 @@ void lprintf(const char *format, Args... args) {
  */
 template <typename... Args>
 void oprintf(const char *format, Args... args) {
-  base_fprintf(false, true, format, args...);
+    base_fprintf(false, true, format, args...);
 }
+
 /**
  * loprintf - print to log file and stdout (log and output print)
  */
 template <typename... Args>
 void loprintf(const char *format, Args... args) {
-  base_fprintf(true, true, format, args...);
+    base_fprintf(true, true, format, args...);
+}
+
+/* ===== File Management Functions ===== */
+
+/**
+ * Determines whether a trace should be dumped based on sampling rate configuration
+ * and updates the relevant counters
+ *
+ * @param key The warp key for warp-based sampling
+ * @return true if the trace should be dumped, false otherwise
+ */
+bool shouldDumpTrace(const WarpKey &key) {
+    // Increment the global message counter for message-based sampling
+    global_message_counter++;
+
+    // Always count the number of instructions executed for each warp
+    if (warp_exec_counters.find(key) == warp_exec_counters.end()) {
+        warp_exec_counters[key] = 0;
+    }
+    warp_exec_counters[key]++;
+
+    // According to the sampling rate, decide whether to dump the trace
+    if (sampling_rate_warp > 1) {
+        // Use warp-based sampling
+        return (warp_exec_counters[key] % sampling_rate_warp == 0);
+    } else if (sampling_rate > 1) {
+        // Use global message-based sampling
+        return (global_message_counter % sampling_rate == 0);
+    } else {
+        // Both sampling rates are 1, dump all traces
+        return true;
+    }
 }
 
 /**
@@ -371,8 +380,216 @@ void create_kernel_log_file(CUcontext ctx, CUfunction func, uint32_t iteration) 
   create_trace_file(filename, true);
 }
 
-/* Counters to track the number of times each kernel has been executed */
-std::map<CUfunction, uint32_t> kernel_execution_count;
+/* ===== Main Functionality ===== */
+
+/**
+ * Updates the loop state for a warp based on its current PC
+ *
+ * @param key The warp key
+ * @param pc The program counter
+ * @param current_trace The current trace record
+ */
+void update_loop_state(const WarpKey &key, uint64_t pc, const TraceRecord &current_trace) {
+  if (!loop_detection_enabled) return;
+
+  if (loop_states.find(key) == loop_states.end()) 
+    loop_states.emplace(key, WarpLoopState(loop_win_size));
+  auto &state = loop_states[key];
+
+  state.pcs[state.head] = pc;
+  state.head = (state.head + 1) % loop_win_size;
+  active_warps.insert(key);
+  if (state.head != 0) return;
+
+  uint8_t period = loop_win_size;
+  for (uint8_t p = 1; p < loop_win_size; ++p) {
+    bool ok = true;
+    for (uint8_t i = p; i < loop_win_size && ok; ++i) 
+      ok &= (state.pcs[i] == state.pcs[i - p]);
+    if (ok) {
+      period = p;
+      break;
+    }
+  }
+
+  if (period == loop_win_size) {
+    state.repeat_cnt = 0;
+    state.loop_flag = false;
+    state.last_sig = 0;
+    return;
+  }
+
+  // Build rotation-invariant signature
+  auto canonical_hash = [&](uint8_t P) -> uint64_t {
+    // Find min_rot to make the first P pcs sorted
+    uint8_t min_rot = 0;
+    for (uint8_t r = 1; r < P; ++r) {
+      for (uint8_t i = 0; i < P; ++i) {
+        uint64_t a = state.pcs[(i + r) % P];
+        uint64_t b = state.pcs[(i + min_rot) % P];
+        if (a == b) continue;
+        if (a < b) min_rot = r;
+        break;
+      }
+    }
+    // Build signature
+    uint64_t h = 14695981039346656037ULL ^ P;
+    for (uint8_t i = 0; i < P; ++i) {
+      uint64_t pc_rot = state.pcs[(i + min_rot) % P];
+      h = (h ^ pc_rot) * 1099511628211ULL;
+    }
+    return h;
+  };
+
+  uint64_t sig = canonical_hash(period);
+
+  if (sig == state.last_sig) {
+    if (++state.repeat_cnt >= loop_repeat_thresh && !state.loop_flag) {
+      state.loop_flag = true;
+      state.first_loop_time = time(nullptr);
+      
+      // Store detailed loop information
+      state.current_loop.period = period;
+      state.current_loop.instructions.clear();
+      
+      // Save complete instruction information for each instruction in the loop
+      for (uint8_t i = 0; i < period; ++i) {
+        WarpLoopState::LoopInstruction instr;
+        instr.pc = state.pcs[i];
+        instr.opcode_id = current_trace.opcode_id;
+        instr.reg_values = current_trace.reg_values;
+        instr.ureg_values = current_trace.ureg_values;
+        state.current_loop.instructions.push_back(instr);
+      }
+      
+      if (verbose >= 2) {
+        loprintf("Warp loop detected (P=%u): CTA %d,%d,%d warp %d\n",
+          period, key.cta_id_x, key.cta_id_y, key.cta_id_z, key.warp_id);
+      }
+    }
+  } else {
+    state.repeat_cnt = 1;
+    state.loop_flag = false;
+    state.last_sig = sig;
+  }
+}
+
+/**
+ * Clears loop detection state when a kernel completes
+ */
+void clear_loop_state() {
+  if (!loop_detection_enabled) {
+    return;
+  }
+
+  loop_states.clear();
+  active_warps.clear();
+  last_hang_check_time = time(nullptr);
+}
+
+/**
+ * Checks if all active warps are stuck in loops
+ *
+ * @param warp_traces Trace records for each warp
+ * @param force_check Force check even if the periodic timer hasn't elapsed
+ * @return true if a kernel hang is detected
+ */
+bool check_kernel_hang(const std::map<WarpKey, std::vector<TraceRecord>> &warp_traces, bool force_check) {
+  if (!loop_detection_enabled || active_warps.empty()) {
+    return false;
+  }
+
+  time_t now = time(nullptr);
+
+  // Only check once per second unless forced
+  if (!force_check && (now - last_hang_check_time < 1)) {
+    return false;
+  }
+
+  last_hang_check_time = now;
+
+  // Check if all active warps are in loops
+  bool all_loops = true;
+  time_t oldest_loop_time = now;
+
+  for (const auto &key : active_warps) {
+    auto it = loop_states.find(key);
+    if (it == loop_states.end() || !it->second.loop_flag) {
+      all_loops = false;
+      break;
+    }
+
+    oldest_loop_time = std::min(oldest_loop_time, it->second.first_loop_time);
+  }
+
+  // If all warps are looping and the oldest loop has been going for at least HANG_TIMEOUT seconds
+  if (all_loops && (now - oldest_loop_time >= loop_hang_timeout)) {
+    loprintf("\n!!! KERNEL HANG DETECTED after %d seconds !!!\n\n", loop_hang_timeout);
+
+    // Print detailed information about each looping warp
+    for (const auto &key : active_warps) {
+      const auto &warp_state = loop_states[key];
+
+      // Print basic warp information
+      loprintf("CTA %d,%d,%d warp %d - Loop Period: %d instructions\n", 
+              key.cta_id_x, key.cta_id_y, key.cta_id_z, key.warp_id,
+              warp_state.current_loop.period);
+
+      // Print each instruction in the loop with full details
+      for (size_t i = 0; i < warp_state.current_loop.instructions.size(); ++i) {
+        const auto &instr = warp_state.current_loop.instructions[i];
+        
+        // Print instruction basic info
+        loprintf("  [%2zu] %s - PC Offset %ld (0x%lx)\n",
+                i, id_to_sass_map[instr.opcode_id].c_str(), 
+                instr.pc / 16, instr.pc);
+
+        // Print register values
+        if (!instr.reg_values.empty()) {
+          loprintf("    Register Values:\n    ");
+          for (size_t reg_idx = 0; reg_idx < instr.reg_values.size(); reg_idx++) {
+            if (!instr.reg_values[reg_idx].empty()) {
+              loprintf("R%zu: ", reg_idx);
+              // Print values for each thread
+              for (int thread = 0; thread < 32; thread++) {
+                if (thread % 8 == 0 && thread > 0) loprintf("\n    ");
+                loprintf("T%d:0x%08x ", thread, 
+                       instr.reg_values[reg_idx][thread]);
+              }
+              loprintf("\n");
+            }
+          }
+        }
+
+        // Print unified register values
+        if (!instr.ureg_values.empty()) {
+          loprintf("    Unified Registers:\n    ");
+          for (size_t i = 0; i < instr.ureg_values.size(); i++) {
+            if (i % 4 == 0 && i > 0) loprintf("\n    ");
+            loprintf("UR%zu:0x%08x ", i, instr.ureg_values[i]);
+          }
+          loprintf("\n");
+        }
+
+        // Print memory addresses if available
+        if (!instr.addrs.empty()) {
+          loprintf("    Memory Addresses:\n    ");
+          for (size_t i = 0; i < instr.addrs.size(); i++) {
+            if (i % 2 == 0 && i > 0) loprintf("\n    ");
+            loprintf("0x%016lx ", instr.addrs[i]);
+          }
+          loprintf("\n");
+        }
+        
+        loprintf("\n");  // Separate instructions with blank line
+      }
+    }
+
+    return true;
+  }
+
+  return false;
+}
 
 void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
   /* Get related functions of the kernel (device function that can be
@@ -1023,7 +1240,7 @@ void *recv_thread_fun(void *) {
           }
 
           // Update loop detection state for this warp
-          update_loop_state(key, ri->pc);
+          update_loop_state(key, ri->pc, trace);
 
           // Check if we should dump intermediate trace for register info
           if (dump_intermedia_trace && !dump_timeout_reached) {
@@ -1192,205 +1409,4 @@ void nvbit_at_init() {
   // Create intermediate trace file if needed
   create_trace_file();
   log_handle_main_trace = log_handle;
-}
-
-// Maps for tracking warp loop states
-std::map<WarpKey, WarpLoopState> loop_states;
-std::set<WarpKey> active_warps;
-
-// Last time we checked for kernel hangs
-static time_t last_hang_check_time = 0;
-
-/**
- * Updates the loop state for a warp based on its current PC
- *
- * @param key The warp key
- * @param pc  The program counter
- */
-void update_loop_state(const WarpKey &key, uint64_t pc) {
-  if (!loop_detection_enabled) return;
-
-  /* ---------- init & push ---------- */
-  if (loop_states.find(key) == loop_states.end()) loop_states.emplace(key, WarpLoopState(loop_win_size));
-  auto &state = loop_states[key];
-
-  state.pcs[state.head] = pc;
-  state.head = (state.head + 1) % loop_win_size;
-  active_warps.insert(key);
-  if (state.head != 0) return;  // buffer not full, return
-
-  /* ---------- 1. find minimal period P ---------- */
-  uint8_t period = loop_win_size;  // default to "no loop"
-  for (uint8_t p = 1; p < loop_win_size; ++p) {
-    bool ok = true;
-    for (uint8_t i = p; i < loop_win_size && ok; ++i) ok &= (state.pcs[i] == state.pcs[i - p]);
-    if (ok) {
-      period = p;
-      break;
-    }
-  }
-  if (period == loop_win_size) {  // 32 instructions in the buffer, no loop
-    state.repeat_cnt = 0;
-    state.loop_flag = false;
-    state.last_sig = 0;
-    return;
-  }
-
-  /* ---------- 2. build rotation-invariant signature ---------- */
-  auto canonical_hash = [&](uint8_t P) -> uint64_t {
-    // 1. find min_rot to make the first P pcs sorted
-    uint8_t min_rot = 0;
-    for (uint8_t r = 1; r < P; ++r) {
-      for (uint8_t i = 0; i < P; ++i) {
-        uint64_t a = state.pcs[(i + r) % P];
-        uint64_t b = state.pcs[(i + min_rot) % P];
-        if (a == b) continue;
-        if (a < b) min_rot = r;
-        break;
-      }
-    }
-    // 2. build signature
-    uint64_t h = 14695981039346656037ULL ^ P;
-    for (uint8_t i = 0; i < P; ++i) {
-      uint64_t pc_rot = state.pcs[(i + min_rot) % P];
-      h = (h ^ pc_rot) * 1099511628211ULL;
-    }
-    return h;
-  };
-
-  uint64_t sig = canonical_hash(period);
-
-  /* ---------- 3. same sig twice ⇒ loop ---------- */
-  if (sig == state.last_sig) {
-    if (++state.repeat_cnt >= loop_repeat_thresh && !state.loop_flag) {
-      state.loop_flag = true;
-      state.first_loop_time = time(nullptr);
-      if (verbose >= 2) {
-        loprintf("Warp loop detected (P=%u): CTA %d,%d,%d warp %d\n", period, key.cta_id_x, key.cta_id_y, key.cta_id_z,
-                 key.warp_id);
-      }
-    }
-  } else {
-    state.repeat_cnt = 1;
-    state.loop_flag = false;
-    state.last_sig = sig;
-  }
-}
-
-/**
- * Clears loop detection state when a kernel completes
- */
-void clear_loop_state() {
-  if (!loop_detection_enabled) {
-    return;
-  }
-
-  loop_states.clear();
-  active_warps.clear();
-  last_hang_check_time = time(nullptr);
-}
-
-/**
- * Checks if all active warps are stuck in loops
- *
- * @param warp_traces Trace records for each warp
- * @param force_check Force check even if the periodic timer hasn't elapsed
- * @return true if a kernel hang is detected
- */
-bool check_kernel_hang(const std::map<WarpKey, std::vector<TraceRecord>> &warp_traces, bool force_check) {
-  if (!loop_detection_enabled || active_warps.empty()) {
-    return false;
-  }
-
-  time_t now = time(nullptr);
-
-  // Only check once per second unless forced
-  if (!force_check && (now - last_hang_check_time < 1)) {
-    return false;
-  }
-
-  last_hang_check_time = now;
-
-  // Check if all active warps are in loops
-  bool all_loops = true;
-  time_t oldest_loop_time = now;
-
-  for (const auto &key : active_warps) {
-    auto it = loop_states.find(key);
-    if (it == loop_states.end() || !it->second.loop_flag) {
-      all_loops = false;
-      break;
-    }
-
-    oldest_loop_time = std::min(oldest_loop_time, it->second.first_loop_time);
-  }
-
-  // If all warps are looping and the oldest loop has been going for at least HANG_TIMEOUT seconds
-  if (all_loops && (now - oldest_loop_time >= loop_hang_timeout)) {
-    loprintf("\n!!! KERNEL HANG DETECTED after %d seconds !!!\n\n", loop_hang_timeout);
-
-    // Print detailed information about each looping warp
-    for (const auto &key : active_warps) {
-      const auto &warp_state = loop_states[key];
-
-      // Make sure we have trace data for this warp
-      auto trace_it = warp_traces.find(key);
-      if (trace_it == warp_traces.end() || trace_it->second.empty()) {
-        continue;
-      }
-
-      // Get the last trace record for this warp
-      const auto &trace = trace_it->second.back();
-
-      // Print warp information, SASS instruction, and PC offset
-      loprintf("  CTA %d,%d,%d warp %d | %s | PCoff %ld (0x%lx)\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
-               key.warp_id, id_to_sass_map[trace.opcode_id].c_str(), trace.pc / 16, trace.pc);
-
-      // If we have register values, print them
-      if (!trace.reg_values.empty()) {
-        loprintf("    Registers (thread 0): ");
-        for (size_t i = 0; i < std::min(size_t(4), trace.reg_values.size()); i++) {
-          if (!trace.reg_values[i].empty()) {
-            loprintf("R%zu:0x%08x ", i, trace.reg_values[i][0]);
-          }
-        }
-        loprintf("\n");
-      }
-
-      // If we have unified register values, print them
-      if (!trace.ureg_values.empty()) {
-        loprintf("    Unified Registers: ");
-
-        // Check for barrier sync operations (look for SYNC or BAR in the instruction)
-        std::string sass_str = id_to_sass_map[trace.opcode_id];
-        bool is_sync = sass_str.find("SYNC") != std::string::npos || sass_str.find("BAR") != std::string::npos;
-
-        // Special handling for synchronization instructions
-        if (is_sync) {
-          loprintf("*** SYNC OPERATION DETECTED ***\n");
-
-          for (size_t i = 0; i < std::min(size_t(8), trace.ureg_values.size()); i++) {
-            loprintf("    UR%zu:0x%08x ", i, trace.ureg_values[i]);
-
-            // Add special annotations for barrier registers
-            if (i == 7 && is_sync) {
-              loprintf("(possible barrier ticket address: 0x%08x+offset)\n", trace.ureg_values[i]);
-            }
-          }
-        } else {
-          // Standard output for non-sync operations
-          for (size_t i = 0; i < std::min(size_t(8), trace.ureg_values.size()); i++) {
-            if (i == 7 || i == 6) {  // Special attention to UR7 and UR6 which often contain barrier info
-              loprintf("UR%zu:0x%08x ", i, trace.ureg_values[i]);
-            }
-          }
-          loprintf("\n");
-        }
-      }
-    }
-
-    return true;
-  }
-
-  return false;
 }
