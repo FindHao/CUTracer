@@ -445,60 +445,45 @@ void instrument_function_if_needed(CUcontext ctx, CUfunction func) {
       if (sass_file) {
         fprintf(sass_file, "// SASS instructions for kernel: %s\n", mangled_name);
         fprintf(sass_file, "// Format: [Instruction Index] [Offset] [Source Location] [SASS Instruction]\n\n");
-        
+
         // Track the last source location to avoid redundant printing
         std::string last_source_location = "";
-        
-        // Define constants for buffer sizes
-        const size_t FILE_NAME_SIZE = 256;
-        const size_t PATH_NAME_SIZE = 512;
-        
+
         // Iterate through all instructions and write them to the file
         for (uint32_t i = 0; i < instrs.size(); i++) {
           auto instr = instrs[i];
           uint32_t offset = instr->getOffset();
-          
+
           // Get source code location information
-          char *file_name = (char*)malloc(sizeof(char) * FILE_NAME_SIZE);
-          // char* file_name = "";
-          // char* dir_name = "";
-          file_name[0] = '\0'; // Initialize to empty string
-          char *dir_name = (char*)malloc(sizeof(char) * PATH_NAME_SIZE);
-          dir_name[0] = '\0'; // Initialize to empty string
+          char *file_name = NULL;
+          char *dir_name = NULL;
           uint32_t line = 0;
-          
+
           std::string source_location;
           bool has_line_info = nvbit_get_line_info(ctx, f, offset, &file_name, &dir_name, &line);
-          
+
           if (has_line_info && file_name != nullptr && file_name[0] != '\0') {
             // File path might not include directory information
             std::string file_path;
             if (dir_name != nullptr && dir_name[0] != '\0') {
-                file_path = std::string(dir_name) + "/" + std::string(file_name);
+              file_path = std::string(dir_name) + "/" + std::string(file_name);
             } else {
-                file_path = std::string(file_name);
+              file_path = std::string(file_name);
             }
-                
+
             source_location = file_path + ":" + std::to_string(line);
           } else {
             source_location = "unknown";
           }
-          
-          // Free allocated memory
-          free(file_name);
-          free(dir_name);
-          
+
           // Smart printing: if the source location is the same as the previous instruction,
           // only print the SASS instruction without repeating the source location
           if (source_location != last_source_location) {
-            fprintf(sass_file, "%d /*%04x*/ %s    %s\n", 
-                    instr->getIdx(), offset, source_location.c_str(), instr->getSass());
+            fprintf(sass_file, "// Source: %s\n%d /*%04x*/ %s\n", source_location.c_str(), instr->getIdx(), offset,
+                    instr->getSass());
             last_source_location = source_location;
           } else {
-            fprintf(sass_file, "%d /*%04x*/ %*s%s\n", 
-                    instr->getIdx(), offset, 
-                    static_cast<int>(source_location.length() + 4), "", // Use spaces for alignment
-                    instr->getSass());
+            fprintf(sass_file, "%d /*%04x*/ %s\n", instr->getIdx(), offset, instr->getSass());
           }
         }
 
@@ -1232,25 +1217,10 @@ void update_loop_state(const WarpKey &key, uint64_t pc) {
   state.pcs[state.head] = pc;
   state.head = (state.head + 1) % loop_win_size;
   active_warps.insert(key);
-  if (key.warp_id == 9) {
-    loprintf("====findhao=====Warp %d,%d,%d,%d PCs: ", key.cta_id_x, key.cta_id_y, key.cta_id_z, key.warp_id);
-    for (int i = 0; i < loop_win_size; ++i) {
-      loprintf("%lx ", state.pcs[(state.head + i) % loop_win_size]);
-    }
-    loprintf("\n");
-  }
-  if (state.head != 0) return;  // 缓冲未满，先返回
-
-  if (key.warp_id == 9) {
-    loprintf("====findhao2=====Warp %d,%d,%d,%d PCs: ", key.cta_id_x, key.cta_id_y, key.cta_id_z, key.warp_id);
-    for (int i = 0; i < loop_win_size; ++i) {
-      loprintf("%lx ", state.pcs[(state.head + i) % loop_win_size]);
-    }
-    loprintf("\n");
-  }
+  if (state.head != 0) return;  // buffer not full, return
 
   /* ---------- 1. find minimal period P ---------- */
-  uint8_t period = loop_win_size;  // 默认为“无循环”
+  uint8_t period = loop_win_size;  // default to "no loop"
   for (uint8_t p = 1; p < loop_win_size; ++p) {
     bool ok = true;
     for (uint8_t i = p; i < loop_win_size && ok; ++i) ok &= (state.pcs[i] == state.pcs[i - p]);
@@ -1259,14 +1229,13 @@ void update_loop_state(const WarpKey &key, uint64_t pc) {
       break;
     }
   }
-  if (period == loop_win_size) {  // 32 条内未形成循环
+  if (period == loop_win_size) {  // 32 instructions in the buffer, no loop
     state.repeat_cnt = 0;
     state.loop_flag = false;
     state.last_sig = 0;
     return;
   }
 
-  /* ---------- 2. build signature (period + pattern) ---------- */
   /* ---------- 2. build rotation-invariant signature ---------- */
   auto canonical_hash = [&](uint8_t P) -> uint64_t {
     // 1. find min_rot to make the first P pcs sorted
