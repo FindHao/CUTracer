@@ -35,7 +35,7 @@ bool any_function_matched = false;
 
 // Loop detection configuration variables
 int loop_win_size;
-int loop_repeat_thresh;
+uint32_t loop_repeat_thresh;
 int loop_hang_timeout;
 int loop_detection_enabled;
 
@@ -261,15 +261,12 @@ void init_config_from_env() {
                  "Sampling rate for trace dump based on warp (1=every instruction, N=every Nth instruction per warp)");
   get_var_uint64(sampling_rate, "SAMPLING_RATE", 1,
                  "Sampling rate for trace dump based on received data (1=every instruction, N=every Nth instruction)");
-                 
+
   // Loop detection configuration
-  get_var_int(loop_win_size, "LOOP_WIN_SIZE", 32, 
-              "Size of the PC window for loop detection");
-  get_var_int(loop_repeat_thresh, "LOOP_REPEAT_THRESH", 16, 
-              "Threshold for repeat count to detect a loop");
-  get_var_int(loop_hang_timeout, "LOOP_HANG_TIMEOUT", 3, 
-              "Timeout in seconds for hang detection");
-  get_var_int(loop_detection_enabled, "LOOP_DETECTION_ENABLED", 1, 
+  get_var_int(loop_win_size, "LOOP_WIN_SIZE", 32, "Size of the PC window for loop detection");
+  get_var_uint32(loop_repeat_thresh, "LOOP_REPEAT_THRESH", 2, "Threshold for repeat count to detect a loop");
+  get_var_int(loop_hang_timeout, "LOOP_HANG_TIMEOUT", 3, "Timeout in seconds for hang detection");
+  get_var_int(loop_detection_enabled, "LOOP_DETECTION_ENABLED", 1,
               "Enable/disable loop detection (1=enabled, 0=disabled)");
 
   // Parse function name patterns if provided

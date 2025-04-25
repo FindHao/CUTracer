@@ -27,7 +27,7 @@ extern uint64_t sampling_rate;        // Sampling rate for trace dump based on r
 
 // Loop detection configuration
 extern int loop_win_size;             // Size of the PC window for loop detection (default: 32)
-extern int loop_repeat_thresh;        // Threshold for repeat count to detect a loop (default: 16)
+extern uint32_t loop_repeat_thresh;        // Threshold for repeat count to detect a loop (default: 16)
 extern int loop_hang_timeout;         // Timeout in seconds for hang detection (default: 3)
 extern int loop_detection_enabled;    // Enable/disable loop detection (default: 1)
 
