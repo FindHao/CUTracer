@@ -536,10 +536,8 @@ bool check_kernel_hang(const std::map<WarpKey, std::vector<TraceRecord>> &warp_t
         const auto &instr = warp_state.current_loop.instructions[i];
 
         // Print instruction basic info
-        // loprintf("  [%2zu] %s - PC Offset %ld (0x%lx)\n", i, id_to_sass_map[instr.opcode_id].c_str(), instr.pc / 16,
-        //  instr.pc);
-        loprintf(" [%2zu] %ld /*0x%lx*/  %s - PC %ld\n", i, instr.opcode_id, instr.opcode_id,
-                 id_to_sass_map[instr.opcode_id].c_str(), instr.pc / 16);
+        loprintf(" [%2zu] %ld /*0x%lx*/  %s - PC %ld\n", i, instr.opcode_id, instr.opcode_id * 16,
+                 id_to_sass_map[instr.opcode_id].c_str(), instr.pc);
 
         // Print register values
         if (!instr.reg_values.empty()) {
@@ -1256,8 +1254,8 @@ void *recv_thread_fun(void *) {
               lprintf("INTERMEDIATE REG TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                       key.warp_id);
               // To match with the PC offset in ncu reports
-              lprintf("%ld /*0x%lx*/  %s - PC %ld\n", trace.opcode_id, trace.opcode_id,
-                      id_to_sass_map[trace.opcode_id].c_str(), trace.pc / 16);
+              lprintf("%ld /*0x%lx*/  %s - PC %ld\n", trace.opcode_id, trace.opcode_id * 16,
+                      id_to_sass_map[trace.opcode_id].c_str(), trace.pc);
 
               for (size_t reg_idx = 0; reg_idx < trace.reg_values.size(); reg_idx++) {
                 lprintf("  * ");
@@ -1307,10 +1305,8 @@ void *recv_thread_fun(void *) {
             if (!dump_timeout_reached && should_dump) {
               lprintf("INTERMEDIATE MEM TRACE - CTA %d,%d,%d - warp %d:\n", key.cta_id_x, key.cta_id_y, key.cta_id_z,
                       key.warp_id);
-              // lprintf("  %s - PC Offset %ld (0x%lx)\n", id_to_sass_map[mem->opcode_id].c_str(), mem->pc / 16,
-              // mem->pc);
-              lprintf("%ld /*0x%lx/*  %s - PC %ld\n", mem->opcode_id, mem->opcode_id,
-                      id_to_sass_map[mem->opcode_id].c_str(), mem->pc / 16);
+              lprintf("%ld /*0x%lx/*  %s - PC %ld\n", mem->opcode_id, mem->opcode_id * 16,
+                      id_to_sass_map[mem->opcode_id].c_str(), mem->pc);
               // Print memory addresses
               lprintf("  Memory Addresses:\n  * ");
               int printed = 0;
