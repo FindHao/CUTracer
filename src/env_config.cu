@@ -1,297 +1,203 @@
-#include <stdio.h>
-#include <stdlib.h>
+#include "env_config.h"
+#include "logger.h" // Include logger for print_config
 
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <limits.h> // For UINT32_MAX
 #include <string>
 #include <vector>
+#include <iostream> // For error messages potentially
 
 // We don't need to include nvbit_tool.h in every source file, just in main.cu
 // We only use variables and functions defined in header files
-#include "env_config.h"
 
-// Define configuration variables
-// EVERY VARIABLE MUST BE INITIALIZED IN init_config_from_env()
-uint32_t instr_begin_interval;
-uint32_t instr_end_interval;
-int verbose;
+// Configuration variable definitions
+uint32_t instr_begin_interval = 0;
+uint32_t instr_end_interval = UINT32_MAX;
+int verbose = 0;
 std::vector<std::pair<uint32_t, uint32_t>> instr_ranges;
 bool use_instr_ranges = false;
-std::string instr_ranges_str = "";
-int deadlock_timeout;
-int enable_logging;
-int log_last_traces_only;
-int log_to_stdout;
-int store_last_traces_only;
-int dump_intermedia_trace;
-int dump_intermedia_trace_timeout;
-int allow_reinstrument;      // if true, allow instrumenting the same kernel multiple times
-uint32_t kernel_iter_begin;  // start instrumenting from this kernel iteration (0=first iteration)
-int single_kernel_trace;
-uint64_t sampling_rate_warp;  // Sampling rate for trace dump based on warp (1=every instruction)
-uint64_t sampling_rate;       // Sampling rate for trace dump based on received data (1=every instruction)
+std::string instr_ranges_str;
+int deadlock_timeout = 60; // Default timeout 60 seconds
+int enable_logging = 1; // Default enable logging
+int log_last_traces_only = 0; // Default log all traces
+int log_to_stdout = 0; // Default log to file
+int store_last_traces_only = 0; // Default store all traces in memory
+int dump_intermedia_trace = 0; // Default disable intermediate trace dump
+int dump_intermedia_trace_timeout = 0; // Default no timeout for intermediate trace dump
+int allow_reinstrument = 1; // Default allow reinstrumentation
+uint32_t kernel_iter_begin = 0;
+int single_kernel_trace = 0; // Default trace all kernels
+uint64_t sampling_rate_warp = 1; // Default sampling rate per warp (1 = all)
+uint64_t sampling_rate = 1; // Default sampling rate globally (1 = all)
+int loop_win_size = 32; // Default window size
+uint32_t loop_repeat_thresh = 16; // Default repeat threshold
+int loop_hang_timeout = 3; // Default hang timeout in seconds
+int loop_detection_enabled = 1; // Default enabled
+int instrument_all_kernels = 0; // Default: require function filter match
 
-// Function name filters
+// Function name patterns to filter
 std::vector<std::string> function_patterns;
 bool any_function_matched = false;
 
-// Loop detection configuration variables
-int loop_win_size;
-uint32_t loop_repeat_thresh;
-int loop_hang_timeout;
-int loop_detection_enabled;
+// Helper to get integer environment variable
+static int get_env_int(const char *env_var, int default_val) {
+    const char *val_str = getenv(env_var);
+    if (val_str) {
+        return atoi(val_str);
+    }
+    return default_val;
+}
 
-// Check if instruction is within specified ranges
+// Helper to get uint32 environment variable
+static uint32_t get_env_uint32(const char *env_var, uint32_t default_val) {
+    const char *val_str = getenv(env_var);
+    if (val_str) {
+        // Use strtoul for better error handling potential, though not fully utilized here
+        char *endptr;
+        unsigned long val = strtoul(val_str, &endptr, 10);
+        if (*endptr == '\0') { // Ensure the whole string was parsed
+            return (uint32_t)val;
+        }
+    }
+    return default_val;
+}
+
+// Helper to get uint64 environment variable
+static uint64_t get_env_uint64(const char *env_var, uint64_t default_val) {
+    const char *val_str = getenv(env_var);
+    if (val_str) {
+        char *endptr;
+        unsigned long long val = strtoull(val_str, &endptr, 10);
+        if (*endptr == '\0') { // Ensure the whole string was parsed
+            return (uint64_t)val;
+        }
+    }
+    return default_val;
+}
+
+// Function to load configuration from environment variables
+void load_config() {
+    verbose = get_env_int(ENV_VERBOSE, 0);
+    deadlock_timeout = get_env_int(ENV_DEADLOCK_TIMEOUT, 60);
+    enable_logging = get_env_int(ENV_LOG_ENABLE, 1);
+    log_last_traces_only = get_env_int(ENV_LOG_LAST_TRACES, 0);
+    log_to_stdout = get_env_int(ENV_LOG_STDOUT, 0);
+    store_last_traces_only = get_env_int(ENV_STORE_LAST_TRACES, 0);
+    dump_intermedia_trace = get_env_int(ENV_DUMP_INTERMEDIA, 0);
+    dump_intermedia_trace_timeout = get_env_int(ENV_DUMP_INTERMEDIA_TIMEOUT, 0);
+    allow_reinstrument = get_env_int(ENV_ALLOW_REINSTRUMENT, 1);
+    kernel_iter_begin = get_env_uint32(ENV_KERNEL_ITER_BEGIN, 0);
+    single_kernel_trace = get_env_int(ENV_SINGLE_KERNEL_TRACE, 0);
+    sampling_rate_warp = get_env_uint64(ENV_SAMPLING_RATE_WARP, 1);
+    sampling_rate = get_env_uint64(ENV_SAMPLING_RATE, 1);
+    loop_win_size = get_env_int(ENV_LOOP_WIN_SIZE, 32);
+    loop_repeat_thresh = get_env_uint32(ENV_LOOP_REPEAT_THRESH, 16);
+    loop_hang_timeout = get_env_int(ENV_LOOP_HANG_TIMEOUT, 3);
+    loop_detection_enabled = get_env_int(ENV_LOOP_DETECTION_ENABLED, 1);
+    instrument_all_kernels = get_env_int(ENV_INSTRUMENT_ALL_KERNELS, 0);
+
+    // Instruction range parsing
+    instr_begin_interval = get_env_uint32(ENV_INSTR_BEGIN, 0);
+    instr_end_interval = get_env_uint32(ENV_INSTR_END, UINT32_MAX);
+
+    // Parse function name patterns
+    const char *patterns_env = getenv(ENV_TARGET_FUNCTIONS);
+    if (patterns_env) {
+        function_patterns.clear(); // Clear previous patterns if any
+        std::string patterns_str(patterns_env);
+        std::string delimiter = ",";
+        size_t pos = 0;
+        std::string token;
+        while ((pos = patterns_str.find(delimiter)) != std::string::npos) {
+            token = patterns_str.substr(0, pos);
+            if (!token.empty()) {
+                function_patterns.push_back(token);
+            }
+            patterns_str.erase(0, pos + delimiter.length());
+        }
+        if (!patterns_str.empty()) { // Add the last token
+            function_patterns.push_back(patterns_str);
+        }
+    }
+}
+
+// Function to print the current configuration
+void print_config() {
+    // Use loprintf from logger.h (already included)
+    loprintf("--- Configuration ---\n");
+    loprintf("  Log Path: %s\n", getenv(ENV_LOG_PATH) ? getenv(ENV_LOG_PATH) : "(stdout)");
+    loprintf("  Trace Path: %s\n", getenv(ENV_TRACE_PATH) ? getenv(ENV_TRACE_PATH) : "(stdout)");
+    loprintf("  Function Filter: %s\n", getenv(ENV_TARGET_FUNCTIONS) ? getenv(ENV_TARGET_FUNCTIONS) : "(none)");
+    loprintf("  Instrument All Kernels: %s\n", instrument_all_kernels ? "Yes" : "No");
+    loprintf("  Instruction Range: [%u, %u]\n", instr_begin_interval, instr_end_interval);
+    loprintf("  Verbose Level: %d\n", verbose);
+    loprintf("  Deadlock Timeout: %d s\n", deadlock_timeout);
+    loprintf("  Logging Enabled: %s\n", enable_logging ? "Yes" : "No");
+    loprintf("  Log Last Traces Only: %s\n", log_last_traces_only ? "Yes" : "No");
+    loprintf("  Log To Stdout: %s\n", log_to_stdout ? "Yes" : "No");
+    loprintf("  Store Last Traces Only (Memory): %s\n", store_last_traces_only ? "Yes" : "No");
+    loprintf("  Dump Intermediate Traces: %s\n", dump_intermedia_trace ? "Yes" : "No");
+    if (dump_intermedia_trace) {
+        loprintf("    Intermediate Dump Timeout: %d s\n", dump_intermedia_trace_timeout);
+    }
+    loprintf("  Allow Reinstrument: %s\n", allow_reinstrument ? "Yes" : "No");
+    loprintf("  Kernel Iteration Begin: %u\n", kernel_iter_begin);
+    loprintf("  Single Kernel Trace File: %s\n", single_kernel_trace ? "Yes" : "No");
+    loprintf("  Warp Sampling Rate: %llu\n", sampling_rate_warp);
+    loprintf("  Global Sampling Rate: %llu\n", sampling_rate);
+    loprintf("  Loop Detection Enabled: %s\n", loop_detection_enabled ? "Yes" : "No");
+    if (loop_detection_enabled) {
+        loprintf("    Loop Window Size: %d\n", loop_win_size);
+        loprintf("    Loop Repeat Threshold: %u\n", loop_repeat_thresh);
+        loprintf("    Loop Hang Timeout: %d s\n", loop_hang_timeout);
+    }
+    loprintf("---------------------\n");
+}
+
+// Check if instrument_all_kernels is enabled
+bool is_instrument_all_kernels_enabled() {
+    return instrument_all_kernels;
+}
+
+// Check if an instruction count is within the specified range
 bool is_instruction_in_ranges(uint32_t instr_cnt) {
-  if (!use_instr_ranges) {
-    // Use the old interval-based logic
-    return (instr_cnt >= instr_begin_interval && instr_cnt < instr_end_interval);
-  }
-
-  // Check if instruction count is in any specified range
-  for (const auto &range : instr_ranges) {
-    if (instr_cnt >= range.first && instr_cnt <= range.second) {
-      return true;
-    }
-  }
-
-  return false;
+    // Basic range check for now
+    return instr_cnt >= instr_begin_interval && instr_cnt <= instr_end_interval;
+    // TODO: Implement complex range check using instr_ranges vector if needed
 }
 
-// Parse instruction ranges from environment variable
-static void parse_instruction_ranges(const char *instr_filter) {
-  if (!instr_filter) return;
-
-  instr_ranges_str = std::string(instr_filter);
-  use_instr_ranges = true;
-
-  // Parse instruction ranges
-  std::string ranges_str = instr_ranges_str;
-  size_t pos = 0;
-  std::string range;
-
-  // Split by commas
-  while ((pos = ranges_str.find(',')) != std::string::npos) {
-    range = ranges_str.substr(0, pos);
-    ranges_str.erase(0, pos + 1);
-
-    // Parse individual range (could be a single number or a range with dash)
-    size_t dash_pos = range.find('-');
-    if (dash_pos != std::string::npos) {
-      // This is a range (e.g., "1-10")
-      try {
-        uint32_t start = std::stoi(range.substr(0, dash_pos));
-        uint32_t end = std::stoi(range.substr(dash_pos + 1));
-        if (start > end) {
-          printf("WARNING: Invalid range %s in INSTRS (start > end). Skipping this range.\n", range.c_str());
-          continue;
-        }
-        instr_ranges.push_back(std::make_pair(start, end));
-      } catch (const std::exception &e) {
-        printf("ERROR: Failed to parse range %s in INSTRS: %s\n", range.c_str(), e.what());
-        continue;
-      }
-    } else {
-      // This is a single number (e.g., "13")
-      try {
-        uint32_t num = std::stoi(range);
-        instr_ranges.push_back(std::make_pair(num, num));
-      } catch (const std::exception &e) {
-        printf("ERROR: Failed to parse instruction number %s in INSTRS: %s\n", range.c_str(), e.what());
-        continue;
-      }
-    }
-  }
-
-  // Process the last range (after the last comma, or the entire string if no commas)
-  if (!ranges_str.empty()) {
-    size_t dash_pos = ranges_str.find('-');
-    if (dash_pos != std::string::npos) {
-      // This is a range (e.g., "1-10")
-      try {
-        uint32_t start = std::stoi(ranges_str.substr(0, dash_pos));
-        uint32_t end = std::stoi(ranges_str.substr(dash_pos + 1));
-        if (start > end) {
-          printf("WARNING: Invalid range %s in INSTRS (start > end). Skipping this range.\n", ranges_str.c_str());
-        } else {
-          instr_ranges.push_back(std::make_pair(start, end));
-        }
-      } catch (const std::exception &e) {
-        printf("ERROR: Failed to parse range %s in INSTRS: %s\n", ranges_str.c_str(), e.what());
-      }
-    } else {
-      // This is a single number (e.g., "13")
-      try {
-        uint32_t num = std::stoi(ranges_str);
-        instr_ranges.push_back(std::make_pair(num, num));
-      } catch (const std::exception &e) {
-        printf("ERROR: Failed to parse instruction number %s in INSTRS: %s\n", ranges_str.c_str(), e.what());
-      }
-    }
-  }
-
-  // Check if we have valid ranges
-  if (instr_ranges.empty()) {
-    printf("WARNING: No valid instruction ranges found in INSTRS=\"%s\". No instructions will be instrumented.\n",
-           instr_filter);
-  }
-
-  // Backward compatibility: if there's only one number (no dash), set it as instr_begin_interval
-  if (instr_ranges.size() == 1 && instr_ranges[0].first == instr_ranges[0].second) {
-    instr_begin_interval = instr_ranges[0].first;
-    if (verbose) {
-      printf("Setting instruction begin interval to %u (backward compatibility mode)\n", instr_begin_interval);
-    }
-  }
-
-  if (verbose) {
-    printf("Instruction ranges: ");
-    for (size_t i = 0; i < instr_ranges.size(); i++) {
-      if (instr_ranges[i].first == instr_ranges[i].second) {
-        printf("%u", instr_ranges[i].first);
-      } else {
-        printf("%u-%u", instr_ranges[i].first, instr_ranges[i].second);
-      }
-      if (i < instr_ranges.size() - 1) {
-        printf(", ");
-      }
-    }
-    printf("\n");
-  }
-
-  printf("Using instruction ranges filter: %s\n", instr_ranges_str.c_str());
-}
-
-// Parse function patterns from environment variable
-static void parse_function_patterns(const char *patterns_env) {
-  if (!patterns_env) return;
-
-  std::string patterns_str(patterns_env);
-  size_t pos = 0;
-  std::string token;
-
-  // Split by commas
-  while ((pos = patterns_str.find(',')) != std::string::npos) {
-    token = patterns_str.substr(0, pos);
-    if (!token.empty()) {
-      function_patterns.push_back(token);
-    }
-    patterns_str.erase(0, pos + 1);
-  }
-
-  // Add the last token (if it exists)
-  if (!patterns_str.empty()) {
-    function_patterns.push_back(patterns_str);
-  }
-
-  if (verbose) {
-    printf("Function name filters to instrument:\n");
-    for (const auto &pattern : function_patterns) {
-      printf("  - %s\n", pattern.c_str());
-    }
-  }
-}
-
-// Helper function for reading environment variables
-static void get_var_int(int &var, const char *env_name, int default_val, const char *description) {
-  const char *env_val = getenv(env_name);
-  if (env_val) {
-    var = atoi(env_val);
-  } else {
-    var = default_val;
-  }
-  printf("%s = %d (%s)\n", env_name, var, description);
-}
-
-static void get_var_uint32(uint32_t &var, const char *env_name, uint32_t default_val, const char *description) {
-  const char *env_val = getenv(env_name);
-  if (env_val) {
-    var = (uint32_t)atoll(env_val);
-  } else {
-    var = default_val;
-  }
-  printf("%s = %u (%s)\n", env_name, var, description);
-}
-
-static void get_var_uint64(uint64_t &var, const char *env_name, uint64_t default_val, const char *description) {
-  const char *env_val = getenv(env_name);
-  if (env_val) {
-    var = (uint64_t)atoll(env_val);
-  } else {
-    var = default_val;
-  }
-  printf("%s = %lu (%s)\n", env_name, var, description);
-}
-
-// Initialize all configuration variables
+// Initialize configuration (called from nvbit_at_init)
 void init_config_from_env() {
-  // Enable device memory allocation
-  setenv("CUDA_MANAGED_FORCE_DEVICE_ALLOC", "1", 1);
+    load_config();
+}
 
-  // Get other configuration variables
-  get_var_int(verbose, "TOOL_VERBOSE", 0, "Enable verbosity inside the tool");
+/**
+ * Truncates a mangled function name to make it suitable for use as a filename
+ * @param mangled_name The original mangled name
+ * @param truncated_buffer The buffer to store the truncated name in
+ * @param buffer_size Size of the provided buffer
+ */
+void truncate_mangled_name(const char *mangled_name, char *truncated_buffer, size_t buffer_size) {
+  if (!truncated_buffer || buffer_size == 0) {
+    return;
+  }
 
-  // Get instruction range filter
-  const char *instr_filter = getenv("INSTRS");
-  if (instr_filter) {
-    parse_instruction_ranges(instr_filter);
+  // Default to unknown if no name provided
+  if (!mangled_name) {
+    snprintf(truncated_buffer, buffer_size, "unknown_kernel");
+    return;
+  }
+
+  // Truncate the name if it's longer than buffer_size - 1 (leave room for null terminator)
+  size_t max_length = buffer_size - 1;
+  size_t name_len = strlen(mangled_name);
+
+  if (name_len > max_length) {
+    strncpy(truncated_buffer, mangled_name, max_length);
+    truncated_buffer[max_length] = '\0';  // Ensure null termination
   } else {
-    // If INSTRS is not set, fall back to the old INSTR_BEGIN/INSTR_END behavior
-    get_var_uint32(instr_begin_interval, "INSTR_BEGIN", 0,
-                   "Beginning of the instruction interval where to apply instrumentation");
-    get_var_uint32(instr_end_interval, "INSTR_END", UINT32_MAX,
-                   "End of the instruction interval where to apply instrumentation");
+    strcpy(truncated_buffer, mangled_name);
   }
-  get_var_int(deadlock_timeout, "DEADLOCK_TIMEOUT", 10, "Timeout in seconds to detect potential deadlocks");
-  get_var_int(enable_logging, "ENABLE_LOGGING", 1, "Enable/disable logging (1=enabled, 0=disabled)");
-  get_var_int(log_last_traces_only, "LOG_LAST_TRACES_ONLY", 0,
-              "Only log the last trace for each warp (1=enabled, 0=disabled)");
-  get_var_int(log_to_stdout, "LOG_TO_STDOUT", 1, "Log to stdout instead of files (1=enabled, 0=disabled)");
-  get_var_int(store_last_traces_only, "STORE_LAST_TRACES_ONLY", 0,
-              "Only store the last trace for each warp in memory (1=enabled, 0=disabled)");
-  get_var_int(dump_intermedia_trace, "DUMP_INTERMEDIA_TRACE", 0,
-              "Dump intermediate trace data to stdout (1=enabled, 0=disabled)");
-  get_var_int(dump_intermedia_trace_timeout, "DUMP_INTERMEDIA_TRACE_TIMEOUT", 0,
-              "Timeout in seconds for intermediate trace dumping (0=unlimited)");
-  get_var_int(allow_reinstrument, "ALLOW_REINSTRUMENT", 0,
-              "Allow instrumenting the same kernel multiple times (1=enabled, 0=disabled)");
-  get_var_uint32(kernel_iter_begin, "KERNEL_ITER_BEGIN", 0,
-                 "Begin instrumentation from this kernel iteration (0=first)");
-  get_var_int(single_kernel_trace, "SINGLE_KERNEL_TRACE", 0,
-              "Create a single trace file for each kernel (1=enabled, 0=disabled)");
-  get_var_uint64(sampling_rate_warp, "SAMPLING_RATE_WARP", 1,
-                 "Sampling rate for trace dump based on warp (1=every instruction, N=every Nth instruction per warp)");
-  get_var_uint64(sampling_rate, "SAMPLING_RATE", 1,
-                 "Sampling rate for trace dump based on received data (1=every instruction, N=every Nth instruction)");
-
-  // Loop detection configuration
-  get_var_int(loop_win_size, "LOOP_WIN_SIZE", 32, "Size of the PC window for loop detection");
-  get_var_uint32(loop_repeat_thresh, "LOOP_REPEAT_THRESH", 2, "Threshold for repeat count to detect a loop");
-  get_var_int(loop_hang_timeout, "LOOP_HANG_TIMEOUT", 3, "Timeout in seconds for hang detection");
-  get_var_int(loop_detection_enabled, "LOOP_DETECTION_ENABLED", 1,
-              "Enable/disable loop detection (1=enabled, 0=disabled)");
-
-  // Parse function name patterns if provided
-  const char *func_patterns = getenv("FUNC_NAME_FILTER");
-  if (func_patterns) {
-    parse_function_patterns(func_patterns);
-  }
-
-  // Check that both sampling rate methods aren't enabled at the same time
-  if (sampling_rate_warp > 1 && sampling_rate > 1) {
-    printf(
-        "WARNING: Both SAMPLING_RATE_WARP and SAMPLING_RATE are set. Using SAMPLING_RATE_WARP and ignoring "
-        "SAMPLING_RATE.\n");
-    sampling_rate = 1;  // Reset sampling_rate to default (every instruction)
-  }
-
-  // Output information about which sampling method is being used
-  if (sampling_rate_warp == 1 && sampling_rate == 1) {
-    printf("Using default sampling rate: every instruction will be traced.\n");
-  } else if (sampling_rate_warp > 1) {
-    printf("Using warp-based sampling: every %lu instruction per warp will be traced.\n", sampling_rate_warp);
-  } else if (sampling_rate > 1) {
-    printf("Using global sampling: every %lu message will be traced.\n", sampling_rate);
-  }
-
-  std::string pad(100, '-');
-  printf("%s\n", pad.c_str());
 }

@@ -36,6 +36,9 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdlib.h> // Added for getenv, atoi, etc.
+#include <string.h> // Added for strcmp, strstr, strncpy, strcpy
+#include <limits.h> // Added for UINT32_MAX if needed elsewhere
 
 #include <map>
 #include <set>
@@ -53,24 +56,18 @@
 /* for channel */
 #include "utils/channel.hpp"
 
-/* contains definition of the reg_info_t structure */
-#include "common.h"
+/* contains definition of the trace message types */
+#include "message_type.h"
 
 /* include environment configuration */
 #include "env_config.h"
 
+/* include new logger module */
+#include "logger.h"
+
 /* ===== Forward Declarations ===== */
 // Forward declarations for functions that are used before they're defined
-template <typename... Args>
-void loprintf(const char *format, Args... args);
-
-template <typename... Args>
-void lprintf(const char *format, Args... args);
-
-template <typename... Args>
-void oprintf(const char *format, Args... args);
-
-bool is_instruction_in_ranges(uint32_t instr_idx);
+// bool is_instruction_in_ranges(uint32_t instr_idx); // Now declared in env_config.h
 
 /* ===== Channel Configuration ===== */
 /* Channel used to communicate from GPU to CPU receiving thread */
@@ -184,61 +181,10 @@ std::map<WarpKey, WarpLoopState> loop_states;
 std::set<WarpKey> active_warps;
 
 /* File handling */
-FILE *log_handle = NULL;
 FILE *log_handle_main_trace = NULL;
 extern bool any_function_matched;
 
 /* ===== Utility Functions for Logging ===== */
-
-/**
- * Base template function for formatted output to different destinations
- * @param file_output if true, output to log file
- * @param stdout_output if true, output to stdout
- * @param format format string
- * @param args variable argument list
- */
-template <typename... Args>
-void base_fprintf(bool file_output, bool stdout_output, const char *format, Args... args) {
-    // if no output, return
-    if (!file_output && !stdout_output) return;
-
-    char output_buffer[2048];  // use a large enough buffer
-    snprintf(output_buffer, sizeof(output_buffer), format, args...);
-
-    // output to stdout
-    if (stdout_output) {
-        fprintf(stdout, "%s", output_buffer);
-    }
-
-    // output to log file (if not stdout)
-    if (file_output && log_handle != NULL && log_handle != stdout) {
-        fprintf(log_handle, "%s", output_buffer);
-    }
-}
-
-/**
- * lprintf - print to log file only (log print)
- */
-template <typename... Args>
-void lprintf(const char *format, Args... args) {
-    base_fprintf(true, false, format, args...);
-}
-
-/**
- * oprintf - print to stdout only (output print)
- */
-template <typename... Args>
-void oprintf(const char *format, Args... args) {
-    base_fprintf(false, true, format, args...);
-}
-
-/**
- * loprintf - print to log file and stdout (log and output print)
- */
-template <typename... Args>
-void loprintf(const char *format, Args... args) {
-    base_fprintf(true, true, format, args...);
-}
 
 /* ===== File Management Functions ===== */
 
@@ -270,114 +216,6 @@ bool shouldDumpTrace(const WarpKey &key) {
         // Both sampling rates are 1, dump all traces
         return true;
     }
-}
-
-/**
- * Creates the intermediate trace file if needed
- * @param custom_filename Optional custom filename for the log file
- */
-void create_trace_file(const char *custom_filename = nullptr, bool create_new_file = false) {
-  if (log_to_stdout) {
-    // If there's already a file and it's not stdout, close it and use stdout
-    if (log_handle != NULL && log_handle != stdout) {
-      fclose(log_handle);
-    }
-    log_handle = stdout;
-    return;
-  }
-
-  if (log_handle_main_trace) {
-    fflush(log_handle_main_trace);
-  }
-  // If there's already a file and it's not stdout, use it directly
-  if (log_handle != NULL && log_handle != stdout && !create_new_file) {
-    return;
-  }
-  if (create_new_file && log_handle != NULL && log_handle != stdout && log_handle != log_handle_main_trace) {
-    fclose(log_handle);
-  }
-  // Need to create a new file
-  char filename[256];
-
-  // Use custom filename if provided, otherwise generate based on timestamp
-  if (custom_filename != nullptr) {
-    strncpy(filename, custom_filename, sizeof(filename) - 1);
-    filename[sizeof(filename) - 1] = '\0';  // Ensure null termination
-  } else {
-    // Generate filename based on timestamp
-    time_t now = time(0);
-    struct tm *timeinfo = localtime(&now);
-    char timestamp[40];
-    strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", timeinfo);
-    snprintf(filename, sizeof(filename), "trace_%s.log", timestamp);
-  }
-
-  log_handle = fopen(filename, "w");
-  if (!log_handle) {
-    fprintf(stderr, "Error opening trace file '%s'. Falling back to stdout.\n", filename);
-    log_handle = stdout;
-  } else {
-    loprintf("Writing traces to %s\n", filename);
-  }
-}
-
-/**
- * Truncates a mangled function name to make it suitable for use as a filename
- * @param mangled_name The original mangled name
- * @param truncated_buffer The buffer to store the truncated name in
- * @param buffer_size Size of the provided buffer
- */
-void truncate_mangled_name(const char *mangled_name, char *truncated_buffer, size_t buffer_size) {
-  if (!truncated_buffer || buffer_size == 0) {
-    return;
-  }
-
-  // Default to unknown if no name provided
-  if (!mangled_name) {
-    snprintf(truncated_buffer, buffer_size, "unknown_kernel");
-    return;
-  }
-
-  // Truncate the name if it's longer than buffer_size - 1 (leave room for null terminator)
-  size_t max_length = buffer_size - 1;
-  size_t name_len = strlen(mangled_name);
-
-  if (name_len > max_length) {
-    strncpy(truncated_buffer, mangled_name, max_length);
-    truncated_buffer[max_length] = '\0';  // Ensure null termination
-  } else {
-    strcpy(truncated_buffer, mangled_name);
-  }
-}
-
-/**
- * Creates a log file specifically for a kernel based on its mangled name and iteration count
- * @param ctx CUDA context
- * @param func CUfunction representing the kernel
- * @param iteration Current iteration of the kernel execution
- */
-void create_kernel_log_file(CUcontext ctx, CUfunction func, uint32_t iteration) {
-  // Get mangled function name for file naming
-  const char *mangled_name = nvbit_get_func_name(ctx, func, true);
-
-  // Create a buffer for the truncated name
-  char truncated_name[201];  // 200 chars + null terminator
-
-  // Truncate the name
-  truncate_mangled_name(mangled_name, truncated_name, sizeof(truncated_name));
-
-  // Create a filename with the truncated name
-  char filename[256];
-  if (allow_reinstrument && single_kernel_trace) {
-    // If SINGLE_KERNEL_TRACE and ALLOW_REINSTRUMENT are enabled, use only kernel name without iteration
-    snprintf(filename, sizeof(filename), "%s.log", truncated_name);
-  } else {
-    // Otherwise include iteration number in filename
-    snprintf(filename, sizeof(filename), "%s_iter%u.log", truncated_name, iteration);
-  }
-
-  // Create trace file with the custom filename
-  create_trace_file(filename, true);
 }
 
 /* ===== Main Functionality ===== */
@@ -880,7 +718,8 @@ static void enter_kernel_launch(CUcontext ctx, CUfunction func, uint64_t &grid_l
 
     uint32_t current_iter = kernel_execution_count[func];
     if (should_enable_instrumentation) {
-      create_kernel_log_file(ctx, func, current_iter);
+      // Removed call to create_kernel_log_file
+      // create_kernel_log_file(ctx, func, current_iter);
     }
 
     if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
@@ -982,12 +821,14 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
       } else {
         if (streamStatus != cudaStreamCaptureStatusActive) {
           if (verbose >= 1) {
-            fprintf(log_handle, "kernel %s not captured by cuda graph\n", nvbit_get_func_name(ctx, func));
+            // Use lprintf to log to the file managed by the logger module
+            lprintf("kernel %s not captured by cuda graph\n", nvbit_get_func_name(ctx, func));
           }
           leave_kernel_launch();
         } else {
           if (verbose >= 1) {
-            fprintf(log_handle, "kernel %s captured by cuda graph\n", nvbit_get_func_name(ctx, func));
+            // Use lprintf here as well
+            lprintf("kernel %s captured by cuda graph\n", nvbit_get_func_name(ctx, func));
           }
         }
       }
@@ -1072,7 +913,8 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
           // Create a log file for this kernel execution
           uint32_t current_iter = kernel_execution_count[func];
           if (should_enable_instrumentation) {
-            create_kernel_log_file(ctx, func, current_iter);
+            // Removed call to create_kernel_log_file
+            // create_kernel_log_file(ctx, func, current_iter);
           }
 
           if (cbid == API_CUDA_cuLaunchKernelEx_ptsz || cbid == API_CUDA_cuLaunchKernelEx) {
@@ -1097,7 +939,8 @@ void nvbit_at_cuda_event(CUcontext ctx, int is_exit, nvbit_api_cuda_t cbid, cons
           cudaDeviceSynchronize();
           cudaError_t kernelError = cudaGetLastError();
           if (kernelError != cudaSuccess) {
-            fprintf(log_handle, "Kernel launch error: %s\n", cudaGetErrorString(kernelError));
+            // Use lprintf for error logging
+            lprintf("Kernel launch error: %s\n", cudaGetErrorString(kernelError));
             assert(0);
           }
 
@@ -1128,15 +971,17 @@ void nvbit_at_graph_node_launch(CUcontext ctx, CUfunction func, CUstream stream,
   bool should_enable_instrumentation = function_patterns.empty() || any_function_matched;
   // Create a log file for this graph node kernel
   if (should_enable_instrumentation) {
-    create_kernel_log_file(ctx, func, current_iter);
+    // Removed call to create_kernel_log_file
+    // create_kernel_log_file(ctx, func, current_iter);
   }
 
   loprintf(
       "Graph Node Launch - Kernel %s - PC 0x%lx - grid launch id %ld - iteration %u - grid size %d,%d,%d "
-      "- block size %d,%d,%d - nregs %d - shmem %d - cuda stream id %ld\n",
+      "- block size %d,%d,%d - nregs %d - shmem %d - cuda stream id %ld%s\n",
       func_name, pc, global_grid_launch_id, current_iter, config.gridDimX, config.gridDimY, config.gridDimZ,
       config.blockDimX, config.blockDimY, config.blockDimZ, config.num_registers,
-      config.shmem_static_nbytes + config.shmem_dynamic_nbytes, (uint64_t)stream);
+      config.shmem_static_nbytes + config.shmem_dynamic_nbytes, (uint64_t)stream,
+      should_enable_instrumentation ? "" : " (NOT INSTRUMENTED)");
 
   // Increment the grid launch ID for the next launch
   global_grid_launch_id++;
@@ -1191,11 +1036,6 @@ void *recv_thread_fun(void *) {
             // Reset the dump timeout when a new kernel starts
             dump_start_time = time(0);
             dump_timeout_reached = false;
-            if (log_handle_main_trace && log_handle != log_handle_main_trace) {
-              // printf("==============debug log_handle: %p\n", log_handle);
-              log_handle = log_handle_main_trace;
-              // printf("==============debug log_handle: %p\n", log_handle);
-            }
             break;
           }
 
@@ -1369,11 +1209,8 @@ void *recv_thread_fun(void *) {
   global_message_counter = 0;
 
   free(recv_buffer);
+  // Close the main trace file handle if it's open and not stdout
   if (log_handle_main_trace && log_handle_main_trace != stdout) {
-    if (log_handle != log_handle_main_trace) {
-      fclose(log_handle);
-      log_handle = NULL;
-    }
     fclose(log_handle_main_trace);
     log_handle_main_trace = NULL;
   }
@@ -1406,7 +1243,76 @@ void nvbit_at_ctx_term(CUcontext ctx) {
 void nvbit_at_init() {
   // Initialize configuration from environment variables
   init_config_from_env();
-  // Create intermediate trace file if needed
-  create_trace_file();
-  log_handle_main_trace = log_handle;
+  // Removed call to create_trace_file and assignment to log_handle_main_trace
+  // create_trace_file();
+  // log_handle_main_trace = log_handle;
+}
+
+/* Clean up resources, print summary, close files */
+void ToolShutdown(void *tool_data) {
+  /* Signal the receiving thread to stop */
+  recv_thread_done = RecvThreadState::STOP;
+
+  /* Wait for the receiving thread to finish processing messages */
+  pthread_join(recv_thread, NULL);
+
+  loprintf("\n=============== NVBit Reg & Mem Tracer Shutting Down ===============\n");
+
+  /* Close the main trace log file if it was opened */
+  if (log_handle_main_trace != NULL && log_handle_main_trace != stdout) {
+    fclose(log_handle_main_trace);
+    log_handle_main_trace = NULL;
+  }
+
+  /* Close the logger */
+  close_logger();
+
+  pthread_mutex_destroy(&cuda_event_mutex);
+}
+
+/* Initialize tool resources, open files, start receiving thread */
+void ToolInit(void *tool_data) {
+  // Initialize mutex for CUDA event synchronization
+  pthread_mutex_init(&cuda_event_mutex, NULL);
+
+  // Load configuration from environment variables
+  load_config();
+
+  // Initialize the logger using the configured path
+  init_logger(getenv(ENV_LOG_PATH));
+
+  loprintf("=============== NVBit Reg & Mem Tracer Initializing ===============\n");
+  print_config(); // Print the loaded configuration
+
+  // Check if any target functions were matched
+  if (!any_function_matched && is_instrument_all_kernels_enabled()) {
+    loprintf(
+        "[WARN] No specific functions matched '%s', but "
+        "INSTRUMENT_ALL_KERNELS is enabled. Instrumenting all kernels.\n",
+        getenv(ENV_TARGET_FUNCTIONS) ? getenv(ENV_TARGET_FUNCTIONS) : "");
+  } else if (!any_function_matched) {
+    loprintf(
+        "[ERROR] No functions matched the target list '%s' and "
+        "INSTRUMENT_ALL_KERNELS is not set. No kernels will be instrumented.\n",
+        getenv(ENV_TARGET_FUNCTIONS) ? getenv(ENV_TARGET_FUNCTIONS) : "");
+    // Optionally, exit or take other action if no functions are targeted
+  }
+
+  // Open the main trace log file if a path is provided
+  const char *trace_path = getenv(ENV_TRACE_PATH);
+  if (trace_path && trace_path[0] != '\0') {
+    log_handle_main_trace = fopen(trace_path, "w");
+    if (log_handle_main_trace == NULL) {
+      loprintf("[ERROR] Could not open main trace file '%s'. Defaulting to stdout.\n", trace_path);
+      log_handle_main_trace = stdout; // Default to stdout if file opening fails
+    } else {
+      loprintf("Main trace output will be written to: %s\n", trace_path);
+    }
+  } else {
+    loprintf("Main trace output will be written to stdout.\n");
+    log_handle_main_trace = stdout; // Default to stdout if no path provided
+  }
+
+  // Initialize the communication channel between GPU and CPU
+  // ... existing code ...
 }
