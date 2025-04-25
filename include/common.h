@@ -29,6 +29,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+
 #include <stdint.h>
 
 /* Message type enum to identify different message types */
@@ -38,6 +39,8 @@ typedef enum { MSG_TYPE_REG_INFO = 0, MSG_TYPE_MEM_ACCESS = 1 } message_type_t;
 typedef struct {
   message_type_t type;  // Type of the message
 } message_header_t;
+
+
 
 /* information collected in the instrumentation function and passed
  * on the channel from the GPU to the CPU */
@@ -70,3 +73,7 @@ typedef struct {
   int opcode_id;
   uint64_t addrs[32];
 } mem_access_t;
+
+/* Structure to represent a single trace record */
+
+
