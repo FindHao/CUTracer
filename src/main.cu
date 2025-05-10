@@ -121,35 +121,38 @@ bool shouldDumpTrace(const WarpKey &key);
 
 /* Structure to track the loop state of a warp */
 struct WarpLoopState {
-  std::vector<uint64_t> pcs;  // Circular buffer of PCs
-  uint8_t head;               // Current position in circular buffer
-  uint64_t last_sig;          // Last computed signature
-  uint8_t last_period;        // Last loop period
-  uint32_t repeat_cnt;        // Number of consecutive pattern repetitions
-  bool loop_flag;             // Flag indicating loop detection
-  time_t first_loop_time;     // Time when loop was first detected
-
-  // Structure to store detailed information for each instruction in the loop
-  struct LoopInstruction {
+  // Structure to store detailed information for each instruction
+  struct Instruction {
     uint64_t pc;                                    // Program counter
     int opcode_id;                                  // Instruction opcode ID
     std::vector<std::vector<uint32_t>> reg_values;  // Register values [reg_idx][thread_idx]
     std::vector<uint32_t> ureg_values;              // Unified register values
-    std::vector<uint64_t> addrs;                    // Memory addresses (if any)
+    std::vector<std::vector<uint64_t>> addrs;       // Memory addresses [thread_idx][addr_idx]
   };
+
+  std::vector<Instruction> instructions;  // Circular buffer of instructions with complete state
+  std::vector<uint64_t> pcs;              // Kept for backward compatibility during transition
+  uint8_t head;                           // Current position in circular buffer
+  uint64_t last_sig;                      // Last computed signature
+  uint8_t last_period;                    // Last loop period
+  uint32_t repeat_cnt;                    // Number of consecutive pattern repetitions
+  bool loop_flag;                         // Flag indicating loop detection
+  time_t first_loop_time;                 // Time when loop was first detected
 
   // Structure to hold complete loop information
   struct LoopInfo {
-    std::vector<LoopInstruction> instructions;  // Complete instruction trace for the loop
-    uint8_t period;                             // Loop period
+    std::vector<Instruction> instructions;  // Complete instruction trace for the loop
+    uint8_t period;                         // Loop period
   };
   LoopInfo current_loop;
 
   // Default constructor (using a default window size of 32)
-  WarpLoopState() : pcs(32, 0), head(0), last_sig(0), repeat_cnt(0), loop_flag(false), first_loop_time(0) {}
+  WarpLoopState() 
+      : instructions(32), pcs(32, 0), head(0), last_sig(0), repeat_cnt(0), loop_flag(false), first_loop_time(0) {}
 
   WarpLoopState(int window_size)
-      : pcs(window_size, 0), head(0), last_sig(0), repeat_cnt(0), loop_flag(false), first_loop_time(0) {}
+      : instructions(window_size), pcs(window_size, 0), head(0), last_sig(0), repeat_cnt(0), 
+        loop_flag(false), first_loop_time(0) {}
 };
 
 enum class RecvThreadState {
@@ -394,15 +397,49 @@ void update_loop_state(const WarpKey &key, uint64_t pc, const TraceRecord &curre
   if (loop_states.find(key) == loop_states.end()) loop_states.emplace(key, WarpLoopState(loop_win_size));
   auto &state = loop_states[key];
 
+  // Store the full instruction information including PC and register values
+  WarpLoopState::Instruction instr;
+  instr.pc = pc;
+  instr.opcode_id = current_trace.opcode_id;
+  instr.reg_values = current_trace.reg_values;
+  instr.ureg_values = current_trace.ureg_values;
+  instr.addrs = current_trace.addrs;
+
+  // Update both the instruction and PC buffers
+  state.instructions[state.head] = instr;
   state.pcs[state.head] = pc;
   state.head = (state.head + 1) % loop_win_size;
   active_warps.insert(key);
   if (state.head != 0) return;
 
+  // Find the period by comparing instruction sequences
   uint8_t period = loop_win_size;
   for (uint8_t p = 1; p < loop_win_size; ++p) {
     bool ok = true;
-    for (uint8_t i = p; i < loop_win_size && ok; ++i) ok &= (state.pcs[i] == state.pcs[i - p]);
+    for (uint8_t i = p; i < loop_win_size && ok; ++i) {
+      // First check PC equality - fast check
+      ok &= (state.pcs[i] == state.pcs[i - p]);
+      
+      // If PCs match, then check register values
+      if (ok) {
+        const auto &instr1 = state.instructions[i];
+        const auto &instr2 = state.instructions[i - p];
+        
+        // Check register values if there are any
+        if (!instr1.reg_values.empty() && !instr2.reg_values.empty()) {
+          // Sample a subset of registers and threads to keep performance reasonable
+          // We check first register's first thread value as a representative
+          if (!instr1.reg_values[0].empty() && !instr2.reg_values[0].empty()) {
+            ok &= (instr1.reg_values[0][0] == instr2.reg_values[0][0]);
+          }
+        }
+        
+        // If unified registers exist, compare the first one
+        if (ok && !instr1.ureg_values.empty() && !instr2.ureg_values.empty()) {
+          ok &= (instr1.ureg_values[0] == instr2.ureg_values[0]);
+        }
+      }
+    }
     if (ok) {
       period = p;
       break;
@@ -416,7 +453,7 @@ void update_loop_state(const WarpKey &key, uint64_t pc, const TraceRecord &curre
     return;
   }
 
-  // Build rotation-invariant signature
+  // Build rotation-invariant signature that includes register values
   auto canonical_hash = [&](uint8_t P) -> uint64_t {
     // Find min_rot to make the first P pcs sorted
     uint8_t min_rot = 0;
@@ -429,11 +466,25 @@ void update_loop_state(const WarpKey &key, uint64_t pc, const TraceRecord &curre
         break;
       }
     }
-    // Build signature
+    
+    // Build signature including PC and selected register values
     uint64_t h = 14695981039346656037ULL ^ P;
     for (uint8_t i = 0; i < P; ++i) {
-      uint64_t pc_rot = state.pcs[(i + min_rot) % P];
-      h = (h ^ pc_rot) * 1099511628211ULL;
+      uint8_t idx = (i + min_rot) % P;
+      const auto &instr = state.instructions[idx];
+      
+      // Add PC to hash
+      h = (h ^ instr.pc) * 1099511628211ULL;
+      
+      // Add a sample of register values to the hash
+      if (!instr.reg_values.empty() && !instr.reg_values[0].empty()) {
+        h = (h ^ instr.reg_values[0][0]) * 1099511628211ULL;
+      }
+      
+      // Add the first unified register value if available
+      if (!instr.ureg_values.empty()) {
+        h = (h ^ instr.ureg_values[0]) * 1099511628211ULL;
+      }
     }
     return h;
   };
@@ -451,12 +502,7 @@ void update_loop_state(const WarpKey &key, uint64_t pc, const TraceRecord &curre
 
       // Save complete instruction information for each instruction in the loop
       for (uint8_t i = 0; i < period; ++i) {
-        WarpLoopState::LoopInstruction instr;
-        instr.pc = state.pcs[i];
-        instr.opcode_id = current_trace.opcode_id;
-        instr.reg_values = current_trace.reg_values;
-        instr.ureg_values = current_trace.ureg_values;
-        state.current_loop.instructions.push_back(instr);
+        state.current_loop.instructions.push_back(state.instructions[i]);
       }
 
       if (verbose >= 2) {
@@ -568,11 +614,16 @@ bool check_kernel_hang(const std::map<WarpKey, std::vector<TraceRecord>> &warp_t
         // Print memory addresses if available
         if (!instr.addrs.empty()) {
           loprintf("    Memory Addresses:\n    ");
-          for (size_t i = 0; i < instr.addrs.size(); i++) {
-            if (i % 2 == 0 && i > 0) loprintf("\n    ");
-            loprintf("0x%016lx ", instr.addrs[i]);
+          for (size_t thread_idx = 0; thread_idx < instr.addrs.size(); thread_idx++) {
+            if (!instr.addrs[thread_idx].empty()) {
+              loprintf("T%zu: ", thread_idx);
+              for (size_t addr_idx = 0; addr_idx < instr.addrs[thread_idx].size(); addr_idx++) {
+                if (addr_idx % 2 == 0 && addr_idx > 0) loprintf("\n    ");
+                loprintf("0x%016lx ", instr.addrs[thread_idx][addr_idx]);
+              }
+              loprintf("\n");
+            }
           }
-          loprintf("\n");
         }
 
         loprintf("\n");  // Separate instructions with blank line
